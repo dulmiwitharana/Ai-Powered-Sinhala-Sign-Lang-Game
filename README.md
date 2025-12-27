@@ -8,8 +8,11 @@ A full-stack application combining React frontend and Node.js/Python backend for
 Game new/
 ├── frontend/          # React + Vite frontend application
 ├── Backend/           # Node.js Express server + Python AI models
+├── package.json       # Root package.json (concurrently setup)
 └── README.md         # This file
 ```
+
+
 
 ## 🚀 Quick Start
 
@@ -19,60 +22,112 @@ Game new/
 - **Python** (v3.8+) and pip
 - **MongoDB** (local or connection string)
 
-### Installation & Setup
+## 📋 Complete Setup Instructions
 
-#### 1. Clone/Navigate to Project
+### Step 1: Install Root Dependencies
 
 ```bash
-cd "d:\Game new"
+# From project root (d:\Game new)
+npm install
 ```
 
-#### 2. Backend Setup
+This installs the `concurrently` package at root level.
 
-**Option A: Node.js Express Server**
+### Step 2: Install Backend Dependencies
 
 ```bash
 cd Backend
 npm install
 ```
 
-**Option B: Python ML Server (SSL Model)**
-
-```bash
-cd Backend/SSL_model
-pip install -r requirements.txt
-```
-
-#### 3. Frontend Setup
+### Step 3: Install Frontend Dependencies
 
 ```bash
 cd frontend
 npm install
 ```
 
+### Step 4: Install Python Dependencies (Optional)
+
+```bash
+# From Backend directory
+pip install -r SSL_model/requirements.txt
+```
+
+Or use virtual environment:
+
+```bash
+python -m venv venv
+# Windows
+venv\Scripts\activate
+# macOS/Linux
+source venv/bin/activate
+
+pip install -r SSL_model/requirements.txt
+```
+
+### Step 5: Configure Environment Variables
+
+Create `.env` file in `Backend/` directory (if not exists):
+
+```env
+PORT=5000
+MONGODB_URI=mongodb+srv://your-username:your-password@cluster.mongodb.net/database?retryWrites=true&w=majority
+NODE_ENV=development
+MODEL_DIR=D:\Game new\Backend\SSL_model
+VIDEO_DIR=D:\Game new\Backend\public\Dataset - Original-20251215T123918Z-3-001
+```
+
+### Step 6: RUN THE APPLICATION
+
+**Option A (Recommended):**
+```bash
+npm run dev:all
+```
+
+**Option B (Windows PowerShell - if concurrently fails):**
+```bash
+npm run dev:windows
+```
+
 ---
 
 ## 🔧 Running the Application
 
-### Start Backend (Node.js)
+### ⭐ RECOMMENDED: Start Everything with ONE Command
+
+**From the project root (`d:\Game new`):**
+
+```bash
+npm run dev:all
+```
+
+This starts all three services concurrently:
+- **Frontend (React):** http://localhost:5173
+- **Backend (Node.js):** http://localhost:5000
+- **ML Server (Python Flask):** http://localhost:5001
+
+### OR Run Services Individually
+
+#### Start Backend (Node.js)
 
 ```bash
 cd Backend
 npm start
 ```
 
-Server runs on: **http://localhost:3000** (or configured PORT in .env)
+Server runs on: **http://localhost:5000** (configured in .env)
 
-### Start Python Flask Server (Optional - for ML Model)
+#### Start Python Flask Server (ML Model)
 
 ```bash
-cd Backend/SSL_model
+cd Backend
 python app.py
 ```
 
-Flask runs on: **http://localhost:5000**
+Flask runs on: **http://localhost:5001**
 
-### Start Frontend (React + Vite)
+#### Start Frontend (React + Vite)
 
 ```bash
 cd frontend
