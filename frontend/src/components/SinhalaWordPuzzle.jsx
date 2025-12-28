@@ -28,8 +28,21 @@ const SinhalaWordPuzzleGame = () => {
   const [aiHints, setAiHints] = useState([]);
   const [showHintPanel, setShowHintPanel] = useState(false);
   
-  // User tracking
-  const [userId] = useState(`user_${Date.now()}`);
+  // User tracking: prefer authenticated MongoDB user id stored by GameUserForm
+  const getStoredUserId = () => {
+    try {
+      const stored = localStorage.getItem('gameUser') || localStorage.getItem('user');
+      if (stored) {
+        const obj = JSON.parse(stored);
+        return obj._id || obj.mongoId || obj.userId || obj.id || `user_${Date.now()}`;
+      }
+    } catch (e) {
+      console.error('Error reading stored user id:', e);
+    }
+    return `user_${Date.now()}`;
+  };
+
+  const [userId] = useState(getStoredUserId());
   const [attemptStartTime, setAttemptStartTime] = useState(null);
   const [loading, setLoading] = useState(false);
 

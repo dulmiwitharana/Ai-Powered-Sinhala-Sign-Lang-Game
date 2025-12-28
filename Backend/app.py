@@ -10,6 +10,19 @@ import random
 import json
 from datetime import datetime
 from collections import defaultdict, deque
+import sys
+import io
+import atexit
+
+# MongoDB integration (saves attempts so Express and Flask share the same data)
+try:
+    from mongodb_integration import mongodb_manager
+except Exception as _e:
+    mongodb_manager = None
+
+# Fix Unicode encoding for Windows terminal
+if sys.stdout.encoding != 'utf-8':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 app = Flask(__name__)
 CORS(app, resources={
@@ -385,17 +398,61 @@ def record_attempt():
         level = data.get('level', 'basic')
         correct = data.get('correct', False)
         time_taken = data.get('time_taken', 0)
-        
-        struggle_detector.record_attempt(user_id, word, level, correct, time_taken)
-        attempt_count = struggle_detector.get_attempt_count(user_id, word)
-        
+        confidence = data.get('confidence', None)
+        session_id = data.get('session_id', None)
+
+        # Build attempt document for MongoDB (field names follow mongodb_integration expectations)
+        attempt_doc = {
+            'userId': str(user_id),
+            'game': data.get('game', 'puzzle'),
+            'level': level,
+            'word': word,
+            'sinhalaWord': word,
+            'englishTranslation': label_to_english.get(word, ''),
+            'correct': bool(correct),
+            'confidence': float(confidence) if confidence is not None else None,
+            'timeTaken': float(time_taken) if time_taken is not None else 0,
+            'attemptNumber': None,
+            'hintsProvided': data.get('hints', []),
+            'feedbackGiven': data.get('feedback', ''),
+            'sessionId': session_id
+        }
+
+        # Persist attempt to MongoDB (or fallback in-memory storage)
+        saved = None
+        try:
+            if mongodb_manager:
+                # determine attemptNumber by counting recent attempts for this user+word
+                try:
+                    recent = []
+                    if hasattr(mongodb_manager, 'get_recent_attempts'):
+                        recent = list(mongodb_manager.get_recent_attempts(user_id, limit=1000) or [])
+                    # count previous attempts for this word
+                    prev_count = sum(1 for a in recent if (a.get('word') == word or a.get('sinhalaWord') == word))
+                    attempt_doc['attemptNumber'] = prev_count + 1
+                except Exception:
+                    attempt_doc['attemptNumber'] = None
+
+                saved = mongodb_manager.save_game_attempt(attempt_doc)
+        except Exception as e:
+            print(f"⚠️  Could not save attempt to MongoDB: {e}")
+
+        # Keep an in-memory record for hints/struggle detector (fast path)
+        try:
+            struggle_detector.record_attempt(user_id, word, level, correct, time_taken)
+            attempt_count = struggle_detector.get_attempt_count(user_id, word)
+        except Exception:
+            # Fallback: try to compute from saved data
+            attempt_count = attempt_doc.get('attemptNumber') or 1
+
         hints = []
         if not correct and attempt_count >= 2:
             english = label_to_english.get(word, '')
             hints = hint_generator.generate_hint(word, attempt_count, english, level)
-        
+
         return jsonify({
             'success': True,
+            'saved': saved is not None,
             'show_hint': len(hints) > 0,
             'hints': hints,
             'attempt_number': attempt_count
@@ -429,15 +486,28 @@ def get_progress_report():
         user_id = data.get('user_id', 'default')
         
         print(f"\n📊 Generating AI progress report for: {user_id}")
-        
-        # Get user's attempt history
-        if user_id not in struggle_detector.attempt_history:
-            return jsonify({
-                'success': False,
-                'message': 'No data available. Play some games first!'
+
+        # Try to read attempts from MongoDB (preferred). If Mongo fallback is in-memory, fall back to struggle_detector.
+        raw_attempts = []
+        if mongodb_manager and hasattr(mongodb_manager, 'get_recent_attempts'):
+            try:
+                raw_attempts = list(mongodb_manager.get_recent_attempts(user_id, limit=1000) or [])
+            except Exception:
+                raw_attempts = []
+        else:
+            # fallback to the in-memory struggle detector history
+            raw_attempts = list(struggle_detector.attempt_history.get(user_id, []))
+
+        # Normalize attempts into a common shape used by the report generator
+        attempts = []
+        for a in raw_attempts:
+            attempts.append({
+                'word': a.get('word') or a.get('sinhalaWord'),
+                'level': a.get('level', 'basic'),
+                'correct': a.get('correct', False),
+                'time_taken': a.get('timeTaken', a.get('time_taken', 0)),
+                'timestamp': a.get('createdAt', a.get('timestamp', datetime.now()))
             })
-        
-        attempts = list(struggle_detector.attempt_history[user_id])
         
         if len(attempts) == 0:
             return jsonify({
@@ -633,4 +703,11 @@ if __name__ == "__main__":
     print(f"🌐 http://localhost:5001")
     print(f"📹 Videos: {len(VIDEO_MAPPING)} mapped")
     print("="*70 + "\n")
+    # Register graceful shutdown to close MongoDB connection if available
+    try:
+        if mongodb_manager and hasattr(mongodb_manager, 'disconnect'):
+            atexit.register(lambda: mongodb_manager.disconnect())
+    except Exception:
+        pass
+
     app.run(host="0.0.0.0", port=5001, debug=True)

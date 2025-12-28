@@ -23,15 +23,6 @@ const GameUserForm = () => {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    // Check if we have prefilled data from login
-    const state = location.state || {};
-    if (state.prefillName) {
-      setFormData(prev => ({
-        ...prev,
-        name: state.prefillName
-      }));
-    }
-    
     checkUserStatus();
   }, [location]);
 
@@ -46,7 +37,23 @@ const GameUserForm = () => {
   const checkUserStatus = async () => {
     // Check if user is logged in via localStorage
     const storedUser = JSON.parse(localStorage.getItem('user') || localStorage.getItem('gameUser'));
-    console.log("Checking user status, stored user:", storedUser);
+    const state = location.state || {};
+    
+    console.log("Checking user status, stored user:", storedUser, "state:", state);
+    
+    // If just logged in (state passed from Login page), show registration form
+    if (state.fromLogin && !storedUser?.hasTakenQuiz) {
+      console.log("New login detected, showing registration form");
+      if (storedUser && storedUser.name) {
+        setFormData(prev => ({
+          ...prev,
+          name: storedUser.name
+        }));
+      }
+      setUserData(storedUser);
+      setStep('register');
+      return;
+    }
     
     if (storedUser && storedUser._id) {
       try {
@@ -67,6 +74,8 @@ const GameUserForm = () => {
             
             setUserData(gameUser);
             localStorage.setItem('gameUser', JSON.stringify(gameUser));
+            // store a simple id key for other components to read
+            if (gameUser._id) localStorage.setItem('gameUserId', gameUser._id);
             
             setStep('goToGames');
             // Automatically navigate to games after 1 second
@@ -74,7 +83,7 @@ const GameUserForm = () => {
               navigate('/game/puzzle');
             }, 1000);
           } else {
-            // User hasn't taken quiz yet
+            // User hasn't taken quiz yet - show quiz intro
             if (storedUser.name) {
               setFormData(prev => ({
                 ...prev,
@@ -128,15 +137,50 @@ const GameUserForm = () => {
         setUserData(user);
         localStorage.setItem('user', JSON.stringify(user));
         localStorage.setItem('gameUser', JSON.stringify(user));
+        if (data.user_id) localStorage.setItem('gameUserId', data.user_id);
         
-        if (data.hasTakenQuiz) {
+        // Grade 1 students skip quiz and go directly to games with basic level
+        if (formData.grade === '1') {
+          console.log('Grade 1 student detected - skipping quiz, setting basic level');
+          
+          // Auto-submit quiz with basic level for grade 1
+          const saveResponse = await fetch(`${API_URL}/quiz/submit`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              user_id: data.user_id,
+              answers: [],
+              recommendedLevel: 'basic',
+              quizScore: 0,
+              quizTotal: 0,
+              quizPercentage: 0
+            })
+          });
+          
+          const saveData = await saveResponse.json();
+          console.log("Grade 1 auto-quiz response:", saveData);
+          
+          const updatedUser = {
+            ...user,
+            hasTakenQuiz: true,
+            recommendedLevel: 'basic'
+          };
+          
+          localStorage.setItem('user', JSON.stringify(updatedUser));
+          localStorage.setItem('gameUser', JSON.stringify(updatedUser));
+          
+          // Navigate to game selection directly
+          setTimeout(() => {
+            navigate('/gameselection');
+          }, 800);
+        } else if (data.hasTakenQuiz) {
           // User already took quiz before (shouldn't happen with new registration)
           setStep('goToGames');
           setTimeout(() => {
             navigate('/game/puzzle');
           }, 1000);
         } else {
-          // New user, show quiz intro
+          // Grades 2-5: show quiz intro
           setStep('quizIntro');
         }
       } else {
@@ -257,6 +301,7 @@ const GameUserForm = () => {
         
         localStorage.setItem('user', JSON.stringify(updatedUser));
         localStorage.setItem('gameUser', JSON.stringify(updatedUser));
+        if (updatedUser._id) localStorage.setItem('gameUserId', updatedUser._id);
         setUserData(updatedUser);
         
         setQuizResult({
@@ -281,7 +326,7 @@ const GameUserForm = () => {
   };
 
   const goToGameSelection = () => {
-    navigate('/game/puzzle');
+    navigate('/gameselection');
   };
 
   // Direct navigation to games for users who already completed quiz
@@ -387,6 +432,7 @@ const GameUserForm = () => {
                   onChange={(e) => setFormData({...formData, grade: e.target.value})}
                   className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
                 >
+                  <option value="1">Grade 1</option>
                   <option value="2">Grade 2</option>
                   <option value="3">Grade 3</option>
                   <option value="4">Grade 4</option>

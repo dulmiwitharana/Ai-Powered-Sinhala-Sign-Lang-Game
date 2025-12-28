@@ -16,22 +16,36 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // ========================
-// MONGODB CONNECTION
+// MONGODB CONNECTION (with retry/backoff for transient DNS/startup issues)
 // ========================
 const MONGODB_URI = process.env.MONGODB_URI;
 
-const connectDB = async () => {
+mongoose.set('strictQuery', false);
+
+const MAX_MONGO_RETRIES = 10;
+
+const connectWithRetry = async (attempt = 0) => {
   try {
-    await mongoose.connect(MONGODB_URI);
+    await mongoose.connect(MONGODB_URI, {
+      serverSelectionTimeoutMS: 5000,
+      useNewUrlParser: true,
+      useUnifiedTopology: true
+    });
     console.log('✅ MongoDB Connected Successfully');
     console.log(`📊 Database: ${mongoose.connection.name}`);
   } catch (error) {
-    console.error('❌ MongoDB Connection Error:', error.message);
-    process.exit(1);
+    console.error(`❌ MongoDB Connection Error (attempt ${attempt + 1}):`, error.message);
+    if (attempt < MAX_MONGO_RETRIES - 1) {
+      const delay = Math.min(30000, 1000 * Math.pow(2, attempt));
+      console.log(`⏳ Retrying MongoDB connection in ${delay}ms...`);
+      setTimeout(() => connectWithRetry(attempt + 1), delay);
+    } else {
+      console.error('❌ Maximum MongoDB connection attempts reached. Continuing without DB; some routes may fail.');
+    }
   }
 };
 
-connectDB();
+connectWithRetry();
 
 // ========================
 // MONGOOSE EVENTS
@@ -369,18 +383,32 @@ app.post('/api/quiz/submit', async (req, res) => {
   try {
     const { user_id, answers, recommendedLevel, quizScore, quizTotal, quizPercentage } = req.body;
 
-    console.log(`📝 Quiz submitted by ${user_id}: ${quizScore}/${quizTotal} (${quizPercentage}%)`);
+    console.log('📝 /api/quiz/submit received payload:', {
+      user_id,
+      recommendedLevel,
+      quizScore,
+      quizTotal,
+      quizPercentage,
+      answersCount: Array.isArray(answers) ? answers.length : 0
+    });
+
     console.log(`🎯 Recommended Level: ${recommendedLevel}`);
 
     // Update user
-    await User.findByIdAndUpdate(user_id, {
-      hasTakenQuiz: true,
-      quizCompletedAt: new Date(),
-      recommendedLevel: recommendedLevel
-    });
+    const userUpdate = await User.findByIdAndUpdate(
+      user_id,
+      {
+        hasTakenQuiz: true,
+        quizCompletedAt: new Date(),
+        recommendedLevel: recommendedLevel
+      },
+      { new: true }
+    );
 
-    // Update game profile
-    await GameProfile.findOneAndUpdate(
+    console.log('🔁 User update result:', !!userUpdate, userUpdate?._id);
+
+    // Update game profile and capture the returned document
+    const profileUpdate = await GameProfile.findOneAndUpdate(
       { userId: user_id },
       {
         hasTakenQuiz: true,
@@ -389,13 +417,26 @@ app.post('/api/quiz/submit', async (req, res) => {
         quizPercentage: quizPercentage,
         quizCompletedAt: new Date(),
         recommendedLevel: recommendedLevel
-      }
+      },
+      { new: true }
     );
+
+    console.log('🔁 GameProfile update result:', !!profileUpdate, profileUpdate?._id);
+
+    if (!userUpdate) {
+      console.warn('⚠️ User not found for quiz submit:', user_id);
+    }
+
+    if (!profileUpdate) {
+      console.warn('⚠️ GameProfile not found for user:', user_id);
+    }
 
     res.json({
       success: true,
       message: 'Quiz results saved',
-      recommendedLevel: recommendedLevel
+      recommendedLevel: recommendedLevel,
+      userUpdated: !!userUpdate,
+      profileUpdated: !!profileUpdate
     });
 
   } catch (error) {

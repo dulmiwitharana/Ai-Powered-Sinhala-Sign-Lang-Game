@@ -63,7 +63,7 @@ export default function Login() {
           localStorage.setItem('gameUser', JSON.stringify(gameUserData));
           
           setTimeout(() => {
-            navigate('/game/puzzle');
+            navigate('/gameselection');
           }, 1500);
         } else {
           // User hasn't completed quiz - go to registration/quiz flow
@@ -71,6 +71,7 @@ export default function Login() {
           
           // Store partial game user data
           const partialGameUser = {
+            _id: data.user._id,
             userId: data.user._id,
             mongoId: data.user._id,
             name: data.user.name,
@@ -80,9 +81,10 @@ export default function Login() {
           };
           
           localStorage.setItem('gameUser', JSON.stringify(partialGameUser));
+          localStorage.setItem('gameUserId', data.user._id);
           
           setTimeout(() => {
-            navigate('/game-register');
+            navigate('/game-register', { state: { fromLogin: true } });
           }, 1500);
         }
       } else {
@@ -108,34 +110,34 @@ export default function Login() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-purple-400 via-pink-400 to-yellow-400 flex items-center justify-center p-4">
-      <div className="bg-white rounded-3xl shadow-2xl p-8 w-full max-w-md transform hover:scale-105 transition-transform duration-300">
+      <div className="bg-white rounded-2xl shadow-lg p-6 w-full max-w-sm transform hover:scale-102 transition-transform duration-200">
         
         {/* Header with Large Visual Icon */}
         <div className="text-center mb-8">
-          <div className="text-6xl mb-4 animate-bounce">
+          <div className="text-5xl mb-3 animate-bounce">
             👋
           </div>
-          <h1 className="text-3xl font-bold bg-gradient-to-r from-purple-600 to-pink-600 bg-clip-text text-transparent">
+          <h1 className="text-2xl font-bold bg-gradient-to-r from-purple-600 to-pink-600 bg-clip-text text-transparent">
             Welcome Back!
           </h1>
-          <p className="text-gray-600 text-lg mt-2">Sign in to continue learning</p>
+          <p className="text-gray-600 text-sm mt-1">Sign in to continue learning</p>
         </div>
 
         {/* Visual Feedback Banner */}
         {feedback.message && (
-          <div className={`mb-6 p-4 rounded-2xl text-center font-bold text-lg animate-pulse ${
+          <div className={`mb-4 p-3 rounded-xl text-center font-semibold text-base animate-pulse ${
             feedback.type === 'success' 
               ? 'bg-green-100 text-green-800 border-2 border-green-300' 
               : 'bg-red-100 text-red-800 border-2 border-red-300'
           }`}>
-            <div className="text-2xl mb-1">
+            <div className="text-xl mb-1">
               {feedback.type === 'success' ? '✅' : '❌'}
             </div>
             {feedback.message}
           </div>
         )}
 
-        <div className="space-y-6">
+          <div className="space-y-4">
           
           {/* Email Input */}
           <div className="space-y-2">
@@ -150,11 +152,11 @@ export default function Login() {
                 value={form.email}
                 onChange={handleChange}
                 onKeyPress={handleKeyPress}
-                className="w-full p-4 pl-12 text-lg border-2 border-gray-300 rounded-2xl focus:border-purple-500 focus:ring-4 focus:ring-purple-200 transition-all duration-300 outline-none"
+                className="w-full p-3 pl-10 text-base border rounded-lg focus:border-purple-500 focus:ring-2 focus:ring-purple-200 transition-all duration-200 outline-none"
                 placeholder="your@email.com"
                 required
               />
-              <div className="absolute left-4 top-1/2 transform -translate-y-1/2 text-2xl">
+              <div className="absolute left-3 top-1/2 transform -translate-y-1/2 text-xl">
                 📧
               </div>
             </div>
@@ -173,17 +175,17 @@ export default function Login() {
                 value={form.password}
                 onChange={handleChange}
                 onKeyPress={handleKeyPress}
-                className="w-full p-4 pl-12 pr-12 text-lg border-2 border-gray-300 rounded-2xl focus:border-purple-500 focus:ring-4 focus:ring-purple-200 transition-all duration-300 outline-none"
+                className="w-full p-3 pl-10 pr-10 text-base border rounded-lg focus:border-purple-500 focus:ring-2 focus:ring-purple-200 transition-all duration-200 outline-none"
                 placeholder="Enter your password"
                 required
               />
-              <div className="absolute left-4 top-1/2 transform -translate-y-1/2 text-2xl">
+              <div className="absolute left-3 top-1/2 transform -translate-y-1/2 text-xl">
                 🔒
               </div>
               <button
                 type="button"
                 onClick={() => setShowPassword(!showPassword)}
-                className="absolute right-4 top-1/2 transform -translate-y-1/2 text-2xl hover:scale-125 transition-transform"
+                className="absolute right-3 top-1/2 transform -translate-y-1/2 text-xl hover:scale-110 transition-transform"
               >
                 {showPassword ? '🙈' : '👁️'}
               </button>
@@ -194,22 +196,21 @@ export default function Login() {
           <button
             onClick={handleSubmit}
             disabled={isLoading}
-            className={`w-full py-4 px-6 rounded-2xl text-xl font-bold text-white transition-all duration-300 transform hover:scale-105 ${
+            className={`w-full py-3 px-5 rounded-xl text-lg font-bold text-white transition-all duration-200 transform hover:scale-102 ${
               isLoading 
                 ? 'bg-gray-400 cursor-not-allowed' 
-                : 'bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 shadow-lg hover:shadow-xl'
+                : 'bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 shadow'
             }`}
           >
             {isLoading ? (
-              <div className="flex items-center justify-center">
-                <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-white mr-3"></div>
+              <div className="flex items-center justify-center text-sm">
+                <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white mr-2"></div>
                 <span>Signing In...</span>
-                <span className="ml-2">⏳</span>
               </div>
             ) : (
-              <div className="flex items-center justify-center">
+              <div className="flex items-center justify-center text-sm">
                 <span>Sign In</span>
-                <span className="ml-2 text-2xl">🚀</span>
+                <span className="ml-2 text-xl">🚀</span>
               </div>
             )}
           </button>
@@ -227,11 +228,11 @@ export default function Login() {
           {/* Register Button */}
           <button
             onClick={handleRegisterRedirect}
-            className="w-full py-4 px-6 rounded-2xl text-xl font-bold text-gray-700 border-2 border-purple-300 bg-white hover:bg-purple-50 transition-all duration-300 transform hover:scale-105"
+            className="w-full py-3 px-5 rounded-xl text-lg font-bold text-gray-700 border border-purple-300 bg-white hover:bg-purple-50 transition-all duration-200 transform hover:scale-102"
           >
-            <div className="flex items-center justify-center">
+            <div className="flex items-center justify-center text-sm">
               <span>Create New Account</span>
-              <span className="ml-2 text-2xl">✨</span>
+              <span className="ml-2 text-xl">✨</span>
             </div>
           </button>
         </div>
@@ -261,12 +262,12 @@ export default function Login() {
         </div>
 
         {/* Debug Info (Remove in production) */}
-        <div className="mt-4 p-3 bg-gray-50 rounded-xl text-xs text-gray-600">
+        {/* <div className="mt-4 p-3 bg-gray-50 rounded-xl text-xs text-gray-600">
           <p className="font-medium mb-1">🔧 Backend Status:</p>
           <p>• Server: http://localhost:5000</p>
           <p>• Login: /users/login</p>
           <p className="mt-1 text-green-600">✅ Make sure your backend is running!</p>
-        </div>
+        </div> */}
 
         {/* Decorative Elements */}
         <div className="flex justify-center mt-6 space-x-2">
