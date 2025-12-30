@@ -21,6 +21,10 @@ const GameUserForm = () => {
   const [quizAnswers, setQuizAnswers] = useState([]);
   const [quizResult, setQuizResult] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [aiHint, setAiHint] = useState(null);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [hintWord, setHintWord] = useState('');
+  const AI_API = 'http://localhost:5001/api/ai/generate-hint';
 
   useEffect(() => {
     checkUserStatus();
@@ -36,13 +40,13 @@ const GameUserForm = () => {
 
   const checkUserStatus = async () => {
     // Check if user is logged in via localStorage
-    const storedUser = JSON.parse(localStorage.getItem('user') || localStorage.getItem('gameUser'));
+    const storedUser = JSON.parse(localStorage.getItem('user') || localStorage.getItem('gameUser') || 'null');
     const state = location.state || {};
     
     console.log("Checking user status, stored user:", storedUser, "state:", state);
     
-    // If just logged in (state passed from Login page), show registration form
-    if (state.fromLogin && !storedUser?.hasTakenQuiz) {
+    // If just logged in (state passed from Login page)
+    if (state.fromLogin && storedUser && !storedUser?.hasTakenQuiz) {
       console.log("New login detected, showing registration form");
       if (storedUser && storedUser.name) {
         setFormData(prev => ({
@@ -55,54 +59,86 @@ const GameUserForm = () => {
       return;
     }
     
+    // If user exists but hasn't taken quiz OR we don't know quiz status
     if (storedUser && storedUser._id) {
       try {
-        // Check if user has already taken quiz
+        // Check if user has already taken quiz from server
         const response = await fetch(`${API_URL}/user/${storedUser._id}/quiz-status`);
+        
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
         const data = await response.json();
         console.log("Quiz status response:", data);
         
         if (data.success) {
-          if (data.hasTakenQuiz) {
+          if (data.hasTakenQuiz || storedUser.hasTakenQuiz) {
             // User has already taken quiz, go directly to game selection
             const gameUser = {
               ...storedUser,
               hasTakenQuiz: true,
-              recommendedLevel: data.recommendedLevel,
-              name: data.name
+              recommendedLevel: data.recommendedLevel || storedUser.recommendedLevel || 'basic',
+              name: data.name || storedUser.name
             };
             
             setUserData(gameUser);
             localStorage.setItem('gameUser', JSON.stringify(gameUser));
-            // store a simple id key for other components to read
+            localStorage.setItem('user', JSON.stringify(gameUser));
             if (gameUser._id) localStorage.setItem('gameUserId', gameUser._id);
             
             setStep('goToGames');
             // Automatically navigate to games after 1 second
             setTimeout(() => {
-              navigate('/game/puzzle');
+              navigate('/gameselection');
             }, 1000);
+            return;
           } else {
             // User hasn't taken quiz yet - show quiz intro
             if (storedUser.name) {
               setFormData(prev => ({
                 ...prev,
-                name: storedUser.name
+                name: storedUser.name,
+                user_type: storedUser.userType || 'student',
+                grade: storedUser.grade || '2'
               }));
             }
             
             setUserData(storedUser);
             setStep('quizIntro');
+            return;
           }
         } else {
-          // If API fails, show registration
+          // If API fails but user exists in localStorage with quiz status
+          if (storedUser.hasTakenQuiz) {
+            console.log("API failed but localStorage shows quiz taken");
+            setUserData(storedUser);
+            setStep('goToGames');
+            setTimeout(() => {
+              navigate('/gameselection');
+            }, 1000);
+            return;
+          }
+          // Fallback to registration
           setStep('register');
         }
       } catch (error) {
         console.error('Error checking user status:', error);
-        setStep('register');
+        
+        // Fallback: Check localStorage for quiz status
+        if (storedUser.hasTakenQuiz) {
+          console.log("Using localStorage data due to API error");
+          setUserData(storedUser);
+          setStep('goToGames');
+          setTimeout(() => {
+            navigate('/gameselection');
+          }, 1000);
+        } else {
+          setStep('register');
+        }
       }
     } else {
+      // No user found, show registration
       setStep('register');
     }
   };
@@ -177,7 +213,7 @@ const GameUserForm = () => {
           // User already took quiz before (shouldn't happen with new registration)
           setStep('goToGames');
           setTimeout(() => {
-            navigate('/game/puzzle');
+            navigate('/gameselection');
           }, 1000);
         } else {
           // Grades 2-5: show quiz intro
@@ -329,9 +365,39 @@ const GameUserForm = () => {
     navigate('/gameselection');
   };
 
+  const fetchAiHint = async ({ user_id, word, level, attempt_count = 3 } = {}) => {
+    try {
+      setAiLoading(true);
+      setAiHint(null);
+      const payload = {
+        user_id: user_id || userData?._id || localStorage.getItem('gameUserId') || 'guest',
+        word: word || hintWord || word,
+        level: level || (userData?.recommendedLevel || 'basic'),
+        attempt_count: attempt_count
+      };
+
+      const res = await fetch(AI_API, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (data.success) {
+        setAiHint(data.ai_hint || data.ai_hint_text || 'No hint returned');
+      } else {
+        setAiHint(data.error || 'AI hint failed');
+      }
+    } catch (err) {
+      console.error('AI hint fetch error:', err);
+      setAiHint('Failed to fetch AI hint');
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
   // Direct navigation to games for users who already completed quiz
   const goDirectToGames = () => {
-    navigate('/game/puzzle');
+    navigate('/gameselection');
   };
 
   if (loading) {
@@ -377,9 +443,22 @@ const GameUserForm = () => {
 
           <button
             onClick={goDirectToGames}
-            className="bg-gradient-to-r from-green-500 to-blue-600 text-white px-8 py-4 rounded-xl font-semibold text-lg hover:shadow-lg transform hover:scale-105 transition"
+            className="bg-gradient-to-r from-green-500 to-blue-600 text-white px-8 py-4 rounded-xl font-semibold text-lg hover:shadow-lg transform hover:scale-105 transition mb-4"
           >
             Go to Games Now 🎮
+          </button>
+          
+          <button
+            onClick={() => {
+              // Clear localStorage and restart
+              localStorage.removeItem('user');
+              localStorage.removeItem('gameUser');
+              localStorage.removeItem('gameUserId');
+              setStep('register');
+            }}
+            className="text-sm text-red-600 hover:text-red-800 underline"
+          >
+            Start Over (Clear My Progress)
           </button>
           
           <p className="text-sm text-gray-500 mt-4">
@@ -604,6 +683,32 @@ const GameUserForm = () => {
           >
             Continue to Games 🎮
           </button>
+
+          <div className="mt-6 bg-white border rounded-xl p-4 text-left">
+            <h4 className="font-bold text-lg mb-2">Try an AI hint (demo)</h4>
+            <div className="flex gap-2 mb-3">
+              <input
+                placeholder="Enter word (Sinhala)"
+                value={hintWord}
+                onChange={(e) => setHintWord(e.target.value)}
+                className="flex-1 px-4 py-2 border rounded-md"
+              />
+              <button
+                onClick={() => fetchAiHint({ word: hintWord })}
+                disabled={aiLoading || !hintWord}
+                className="bg-indigo-600 text-white px-4 py-2 rounded-md disabled:opacity-50"
+              >
+                {aiLoading ? 'Loading…' : 'Get AI Hint'}
+              </button>
+            </div>
+
+            {aiHint && (
+              <div className="bg-gray-50 border rounded-md p-3">
+                <strong>AI Hint:</strong>
+                <p className="mt-2 whitespace-pre-wrap">{aiHint}</p>
+              </div>
+            )}
+          </div>
         </div>
       </div>
     );

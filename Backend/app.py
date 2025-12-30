@@ -3,7 +3,7 @@ import pickle
 import regex
 import torch
 import torch.nn as nn
-from flask import Flask, request, jsonify, send_file, Response
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 import numpy as np
 import random
@@ -13,14 +13,23 @@ from collections import defaultdict, deque
 import sys
 import io
 import atexit
+import hashlib
+from google import genai
+from dotenv import load_dotenv
 
-# MongoDB integration (saves attempts so Express and Flask share the same data)
+# Load environment variables from .env file
+load_dotenv()
+print(f"🔑 GEMINI_API_KEY loaded: {'Yes' if os.getenv('GEMINI_API_KEY') else 'No'}")
+
+# MongoDB integration
 try:
     from mongodb_integration import mongodb_manager
-except Exception as _e:
+    print("✅ MongoDB integration loaded")
+except Exception as e:
+    print(f"⚠️ MongoDB integration failed: {e}")
     mongodb_manager = None
 
-# Fix Unicode encoding for Windows terminal
+# Fix Unicode encoding for Windows
 if sys.stdout.encoding != 'utf-8':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
@@ -39,14 +48,11 @@ CORS(app, resources={
 MODEL_DIR = r"D:\Game new\Backend\SSL_model"
 VIDEO_DIR = r"D:\Game new\Backend\public\Dataset - Original-20251215T123918Z-3-001"
 
-print(f"📁 VIDEO_DIR: {VIDEO_DIR}")
-print(f"✓ Directory exists: {os.path.exists(VIDEO_DIR)}")
-
 # ========================
-# GLOBAL STORAGE - FIX: Initialize user_game_states
+# GLOBAL STORAGE
 # ========================
 user_sessions = {}
-user_game_states = {}  # ← THIS WAS MISSING!
+user_game_states = {}
 
 # ========================
 # BUILD VIDEO MAPPING
@@ -86,7 +92,7 @@ def build_video_mapping():
                 
                 print(f"  {key:20s} → File: {file}")
 
-    print(f"\n✅ Mapped {len(video_map)} unique words (1 video per word)")
+    print(f"\n✅ Mapped {len(video_map)} unique words")
     return video_map
 
 # Load metadata
@@ -103,18 +109,13 @@ try:
     level_indices = metadata['level_indices']
 
     print("✅ Metadata loaded successfully!")
-    print(f"📊 Levels: {list(level_words.keys())}")
-    for level, words in level_words.items():
-        print(f"   {level}: {len(words)} words")
 except Exception as e:
     print(f"❌ Error loading metadata: {e}")
-    # Fallback data for testing
     label_to_english = {}
     level_words = {'basic': [], 'easy': [], 'medium': [], 'hard': []}
     level_indices = {}
     input_dim, hidden_dim, num_classes = 128, 256, 100
 
-# Build mapping (needs label_to_english to be loaded first)
 VIDEO_MAPPING = build_video_mapping()
 
 # Update video mapping with Sinhala words
@@ -149,48 +150,77 @@ class StruggleDetector:
         if user_id not in self.attempt_history:
             return 0
         return sum(1 for a in self.attempt_history[user_id] if a['word'] == word)
-    
-    def get_level_performance(self, user_id, level):
-        if user_id not in self.attempt_history:
-            return {'total': 0, 'correct': 0, 'accuracy': 0}
-        level_attempts = [a for a in self.attempt_history[user_id] if a.get('level') == level]
-        total = len(level_attempts)
-        correct = sum(1 for a in level_attempts if a['correct'])
-        return {'total': total, 'correct': correct, 'accuracy': (correct / total * 100) if total > 0 else 0}
-
-class HintGenerator:
-    def __init__(self):
-        self.hint_templates = {
-            'encouragement': ["You're doing great! 💪", "හොඳින් කරනවා! 🌟"],
-            'visual': ["Watch carefully 👀", "Focus on positions 👋"],
-            'syllable': ["අකුරු {count} ක් තිබේ 📝"],
-            'starts_with': ["'{letter}' අකුරෙන් ආරම්භ වේ ✏️"],
-            'meaning': ["Meaning: {english} 🌍"]
-        }
-    
-    def count_syllables(self, word):
-        word_cleaned = regex.sub(r'^\d+\.\s*', '', word)
-        syllables = regex.findall(r'\X', word_cleaned)
-        return len([s for s in syllables if s.strip()])
-    
-    def generate_hint(self, word, attempt_number, english_meaning, level='easy'):
-        hints = []
-        if attempt_number <= 1:
-            hints.append(random.choice(self.hint_templates['encouragement']))
-        elif attempt_number == 2:
-            hints.append(random.choice(self.hint_templates['visual']))
-        elif attempt_number == 3:
-            syl_count = self.count_syllables(word)
-            hints.append(self.hint_templates['syllable'][0].format(count=syl_count))
-        elif attempt_number == 4:
-            first_letter = word[0] if word else ''
-            hints.append(self.hint_templates['starts_with'][0].format(letter=first_letter))
-        elif attempt_number >= 5 and english_meaning:
-            hints.append(self.hint_templates['meaning'][0].format(english=english_meaning))
-        return hints
 
 struggle_detector = StruggleDetector()
-hint_generator = HintGenerator()
+
+# ========================
+# AI HINTS - FIXED GEMINI IMPLEMENTATION
+# ========================
+ai_hint_cache = {}
+
+def _anonymize_user(user_id: str) -> str:
+    try:
+        return hashlib.sha256(str(user_id).encode('utf-8')).hexdigest()[:12]
+    except Exception:
+        return 'anon'
+
+def generate_ai_hint(user_id, word, english, attempt_count, recent_attempts, level='basic'):
+    """Generate AI hint using Gemini API"""
+    key = f"{user_id}:{word}:{attempt_count}:{level}"
+    if key in ai_hint_cache:
+        return {'cached': True, 'hint': ai_hint_cache[key]}
+
+    api_key = os.environ.get('GEMINI_API_KEY')
+    if not api_key:
+        print("⚠️ GEMINI_API_KEY not set")
+        return {'cached': False, 'hint': None, 'error': 'API key not configured'}
+
+    try:
+        # Initialize Gemini client
+        client = genai.Client(api_key=api_key)
+        
+        # Build prompt
+        user_hash = _anonymize_user(user_id)
+        prompt = f"""You are a friendly sign language tutor for children. Generate a short, encouraging hint.
+
+Context:
+- User: {user_hash}
+- Word: {word} ({english})
+- Attempt: {attempt_count}
+- Level: {level}
+
+Generate a JSON response with:
+- hint_text: Short encouraging tip (1-2 sentences)
+- micro_activity: Quick practice suggestion (<=30 seconds)
+- language: "si" or "en"
+
+Keep it positive and age-appropriate. Don't reveal the exact answer."""
+
+        # Call Gemini API (use correct model name for google-genai v1.x)
+        response = client.models.generate_content(
+            model='gemini-2.0-flash-exp',  # or 'gemini-1.5-pro' or 'gemini-1.5-flash-latest'
+            contents=prompt
+        )
+        
+        # Extract text from response
+        hint_text = response.text if hasattr(response, 'text') else str(response)
+        
+        # Try to parse JSON, fallback to raw text
+        try:
+            hint_data = json.loads(hint_text.strip())
+            formatted_hint = f"{hint_data.get('hint_text', '')} {hint_data.get('micro_activity', '')}"
+        except:
+            formatted_hint = hint_text.strip()
+        
+        # Cache the hint
+        if formatted_hint:
+            ai_hint_cache[key] = formatted_hint
+            
+        return {'cached': False, 'hint': formatted_hint}
+        
+    except Exception as e:
+        print(f"⚠️ AI hint generation failed: {e}")
+        return {'cached': False, 'hint': None, 'error': str(e)}
 
 # ========================
 # MODEL
@@ -229,17 +259,13 @@ class GameState:
     def add_used_word(self, word):
         if word not in self.used_words:
             self.used_words.append(word)
-            print(f"📝 Added '{word}' to used words for {self.user_id}. Total used: {len(self.used_words)}")
     
     def get_available_words(self, all_words):
-        available = [w for w in all_words if w not in self.used_words]
-        print(f"📊 Available words for {self.user_id}: {len(available)}/{len(all_words)}")
-        return available
+        return [w for w in all_words if w not in self.used_words]
     
     def reset_game(self):
         self.used_words = []
         self.round = 0
-        print(f"🔄 Reset game state for {self.user_id}")
     
     def is_game_complete(self):
         return self.round >= self.max_rounds
@@ -248,19 +274,17 @@ def get_game_state(user_id, level):
     key = f"{user_id}_{level}"
     if key not in user_game_states:
         user_game_states[key] = GameState(user_id, level)
-        print(f"🎮 Created new game state for {user_id} (level: {level})")
     return user_game_states[key]
 
 # ========================
 # VIDEO HELPER
 # ========================
 def find_video_for_word(sinhala_word):
-    """Find video file for word - returns video key (not path)"""
+    """Find video file for word"""
     english = label_to_english.get(sinhala_word, '').lower()
     
     if english in VIDEO_MAPPING:
         return english
-    
     if sinhala_word.lower() in VIDEO_MAPPING:
         return sinhala_word.lower()
     
@@ -268,7 +292,6 @@ def find_video_for_word(sinhala_word):
         if english and (key.startswith(english[:3]) or english.startswith(key[:3])):
             return key
     
-    print(f"⚠️ No video: {sinhala_word} ({english})")
     return None
 
 # ========================
@@ -279,9 +302,8 @@ def health():
     return jsonify({
         'status': 'healthy',
         'videos_mapped': len(VIDEO_MAPPING),
-        'video_dir_exists': os.path.exists(VIDEO_DIR),
-        'levels': list(level_words.keys()),
-        'active_sessions': len(user_game_states)
+        'mongodb_connected': mongodb_manager is not None,
+        'levels': list(level_words.keys())
     })
 
 @app.route('/api/puzzle/generate', methods=['POST'])
@@ -291,53 +313,28 @@ def generate_puzzle():
         level = data.get('level', 'basic')
         user_id = data.get('user_id', 'default')
         
-        if level not in level_words:
-            return jsonify({'success': False, 'error': 'Invalid level'}), 400
-        
         game_state = get_game_state(user_id, level)
         game_state.round += 1
         
-        print(f"\n🎯 Round {game_state.round}/{game_state.max_rounds} for {user_id} (Level: {level})")
-        
-        level_word_list = level_words[level]
-        
-        words_with_videos = []
-        for w in level_word_list:
-            video_key = find_video_for_word(w)
-            if video_key:
-                words_with_videos.append(w)
-        
-        print(f"📊 Level '{level}': {len(words_with_videos)}/{len(level_word_list)} words with videos")
-        
+        level_word_list = level_words.get(level, [])
+        words_with_videos = [w for w in level_word_list if find_video_for_word(w)]
         available_words = game_state.get_available_words(words_with_videos)
         
         if len(available_words) < 4:
-            print(f"⚠️ Not enough new words, resetting used words list")
             game_state.used_words = []
             available_words = words_with_videos
         
         if len(available_words) < 4:
-            return jsonify({
-                'success': False,
-                'error': f'Not enough words with videos in {level} ({len(available_words)} available)'
-            }), 400
+            return jsonify({'success': False, 'error': 'Not enough words'}), 400
         
         target_word = random.choice(available_words)
         game_state.add_used_word(target_word)
         video_key = find_video_for_word(target_word)
         
         other_available = [w for w in available_words if w != target_word]
-        
-        if len(other_available) >= 3:
-            options = random.sample(other_available, 3)
-        else:
-            all_other = [w for w in words_with_videos if w != target_word]
-            options = random.sample(all_other, min(3, len(all_other)))
-        
+        options = random.sample(other_available, min(3, len(other_available)))
         options.append(target_word)
         random.shuffle(options)
-        
-        print(f"✅ Selected word: {target_word} (English: {label_to_english.get(target_word, '')})")
         
         return jsonify({
             'success': True,
@@ -347,46 +344,36 @@ def generate_puzzle():
             'options': [{'word': w, 'english': label_to_english.get(w, '')} for w in options],
             'level': level,
             'round': game_state.round,
-            'total_rounds': game_state.max_rounds,
-            'used_words_count': len(game_state.used_words)
+            'total_rounds': game_state.max_rounds
         })
     except Exception as e:
-        print(f"❌ Puzzle generation error: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"❌ Error: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/videos/<video_key>', methods=['GET'])
 def serve_video(video_key):
     try:
-        print(f"\n🎥 Video request: '{video_key}'")
         video_key = video_key.lower().strip()
         
         if video_key not in VIDEO_MAPPING:
-            print(f"❌ Video key not found: '{video_key}'")
-            return jsonify({'error': 'Video not found', 'video_key': video_key}), 404
+            return jsonify({'error': 'Video not found'}), 404
         
         video_info = VIDEO_MAPPING[video_key]
         full_path = video_info['full_path']
         
         if not os.path.exists(full_path):
-            print(f"❌ File does not exist on disk!")
-            return jsonify({'error': 'Video file not found on disk'}), 404
+            return jsonify({'error': 'Video file not found'}), 404
         
         ext = os.path.splitext(full_path)[1].lower()
-        mimetype_map = {
+        mimetype = {
             '.mp4': 'video/mp4',
-            '.mov': 'video/quicktime',
-            '.avi': 'video/x-msvideo',
             '.webm': 'video/webm',
-            '.mkv': 'video/x-matroska'
-        }
-        mimetype = mimetype_map.get(ext, 'video/mp4')
+            '.avi': 'video/x-msvideo'
+        }.get(ext, 'video/mp4')
         
-        return send_file(full_path, mimetype=mimetype, as_attachment=False)
+        return send_file(full_path, mimetype=mimetype)
         
     except Exception as e:
-        print(f"❌ Error serving video: {e}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/attempt', methods=['POST'])
@@ -398,140 +385,99 @@ def record_attempt():
         level = data.get('level', 'basic')
         correct = data.get('correct', False)
         time_taken = data.get('time_taken', 0)
-        confidence = data.get('confidence', None)
-        session_id = data.get('session_id', None)
-
-        # Build attempt document for MongoDB (field names follow mongodb_integration expectations)
+        
+        # Save to MongoDB
         attempt_doc = {
             'userId': str(user_id),
-            'game': data.get('game', 'puzzle'),
+            'game': 'puzzle',
             'level': level,
             'word': word,
             'sinhalaWord': word,
             'englishTranslation': label_to_english.get(word, ''),
             'correct': bool(correct),
-            'confidence': float(confidence) if confidence is not None else None,
-            'timeTaken': float(time_taken) if time_taken is not None else 0,
-            'attemptNumber': None,
-            'hintsProvided': data.get('hints', []),
-            'feedbackGiven': data.get('feedback', ''),
-            'sessionId': session_id
+            'confidence': data.get('confidence'),
+            'timeTaken': float(time_taken),
+            'sessionId': data.get('session_id')
         }
-
-        # Persist attempt to MongoDB (or fallback in-memory storage)
-        saved = None
-        try:
-            if mongodb_manager:
-                # determine attemptNumber by counting recent attempts for this user+word
-                try:
-                    recent = []
-                    if hasattr(mongodb_manager, 'get_recent_attempts'):
-                        recent = list(mongodb_manager.get_recent_attempts(user_id, limit=1000) or [])
-                    # count previous attempts for this word
-                    prev_count = sum(1 for a in recent if (a.get('word') == word or a.get('sinhalaWord') == word))
-                    attempt_doc['attemptNumber'] = prev_count + 1
-                except Exception:
-                    attempt_doc['attemptNumber'] = None
-
-                saved = mongodb_manager.save_game_attempt(attempt_doc)
-        except Exception as e:
-            print(f"⚠️  Could not save attempt to MongoDB: {e}")
-
-        # Keep an in-memory record for hints/struggle detector (fast path)
-        try:
-            struggle_detector.record_attempt(user_id, word, level, correct, time_taken)
-            attempt_count = struggle_detector.get_attempt_count(user_id, word)
-        except Exception:
-            # Fallback: try to compute from saved data
-            attempt_count = attempt_doc.get('attemptNumber') or 1
-
-        hints = []
+        
+        saved = False
+        if mongodb_manager:
+            try:
+                result = mongodb_manager.save_game_attempt(attempt_doc)
+                saved = result is not None
+                print(f"✅ Attempt saved: {saved}")
+            except Exception as e:
+                print(f"⚠️ MongoDB save failed: {e}")
+                # Continue anyway - don't fail the request
+        
+        # Track in memory
+        struggle_detector.record_attempt(user_id, word, level, correct, time_taken)
+        attempt_count = struggle_detector.get_attempt_count(user_id, word)
+        
+        # Generate AI hint if struggling
+        ai_hint_result = None
         if not correct and attempt_count >= 2:
-            english = label_to_english.get(word, '')
-            hints = hint_generator.generate_hint(word, attempt_count, english, level)
-
+            recent = list(struggle_detector.attempt_history.get(user_id, []))[-6:]
+            ai_hint_result = generate_ai_hint(
+                user_id, word, label_to_english.get(word, ''), 
+                attempt_count, recent, level
+            )
+        
         return jsonify({
             'success': True,
-            'saved': saved is not None,
-            'show_hint': len(hints) > 0,
-            'hints': hints,
-            'attempt_number': attempt_count
+            'saved': saved,
+            'attempt_number': attempt_count,
+            'ai_hint': ai_hint_result.get('hint') if ai_hint_result else None,
+            'ai_hint_cached': ai_hint_result.get('cached', False) if ai_hint_result else False
         })
     except Exception as e:
+        print(f"❌ Error: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
-@app.route('/api/puzzle/reset', methods=['POST'])
-def reset_puzzle():
-    try:
-        data = request.json
-        user_id = data.get('user_id', 'default')
-        level = data.get('level', 'basic')
-        
-        key = f"{user_id}_{level}"
-        if key in user_game_states:
-            del user_game_states[key]
-            print(f"🔄 Reset game state for {user_id} (level: {level})")
-        
-        return jsonify({'success': True, 'message': 'Game state reset'})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-
-# Add this to your Flask backend (app.py or main.py) after the existing endpoints
-
-@app.route('/api/ai/progress-report', methods=['POST'])
+@app.route('/api/ai/progress-report', methods=['POST', 'OPTIONS'])
 def get_progress_report():
+    if request.method == 'OPTIONS':
+        return '', 204
+        
     try:
         data = request.json
         user_id = data.get('user_id', 'default')
         
-        print(f"\n📊 Generating AI progress report for: {user_id}")
-
-        # Try to read attempts from MongoDB (preferred). If Mongo fallback is in-memory, fall back to struggle_detector.
-        raw_attempts = []
+        # Get attempts from MongoDB or memory
+        attempts = []
         if mongodb_manager and hasattr(mongodb_manager, 'get_recent_attempts'):
             try:
                 raw_attempts = list(mongodb_manager.get_recent_attempts(user_id, limit=1000) or [])
-            except Exception:
-                raw_attempts = []
-        else:
-            # fallback to the in-memory struggle detector history
-            raw_attempts = list(struggle_detector.attempt_history.get(user_id, []))
-
-        # Normalize attempts into a common shape used by the report generator
-        attempts = []
-        for a in raw_attempts:
-            attempts.append({
-                'word': a.get('word') or a.get('sinhalaWord'),
-                'level': a.get('level', 'basic'),
-                'correct': a.get('correct', False),
-                'time_taken': a.get('timeTaken', a.get('time_taken', 0)),
-                'timestamp': a.get('createdAt', a.get('timestamp', datetime.now()))
-            })
+                for a in raw_attempts:
+                    attempts.append({
+                        'word': a.get('word') or a.get('sinhalaWord'),
+                        'level': a.get('level', 'basic'),
+                        'correct': a.get('correct', False),
+                        'time_taken': a.get('timeTaken', 0),
+                        'timestamp': a.get('createdAt', datetime.now())
+                    })
+            except Exception as e:
+                print(f"⚠️ MongoDB query failed: {e}")
+        
+        if not attempts:
+            attempts = list(struggle_detector.attempt_history.get(user_id, []))
         
         if len(attempts) == 0:
-            return jsonify({
-                'success': False,
-                'message': 'No gameplay data found'
-            })
+            return jsonify({'success': False, 'message': 'No data found'})
         
-        # Calculate statistics
-        total_attempts = len(attempts)
-        correct_attempts = sum(1 for a in attempts if a['correct'])
-        accuracy = (correct_attempts / total_attempts * 100) if total_attempts > 0 else 0
+        # Calculate stats
+        total = len(attempts)
+        correct = sum(1 for a in attempts if a['correct'])
+        accuracy = (correct / total * 100) if total > 0 else 0
+        words_learned = len(set(a['word'] for a in attempts if a['correct']))
         
-        # Get unique words learned
-        unique_words = set(a['word'] for a in attempts if a['correct'])
-        words_learned = len(unique_words)
-        
-        # Calculate level progress
-        level_stats = defaultdict(lambda: {'total': 0, 'correct': 0, 'attempts': []})
-        for attempt in attempts:
-            level = attempt.get('level', 'basic')
-            level_stats[level]['total'] += 1
-            level_stats[level]['attempts'].append(attempt)
-            if attempt['correct']:
-                level_stats[level]['correct'] += 1
+        # Level progress
+        level_stats = defaultdict(lambda: {'total': 0, 'correct': 0})
+        for a in attempts:
+            lvl = a.get('level', 'basic')
+            level_stats[lvl]['total'] += 1
+            if a['correct']:
+                level_stats[lvl]['correct'] += 1
         
         level_progress = {}
         for level in ['basic', 'easy', 'medium', 'hard']:
@@ -541,159 +487,36 @@ def get_progress_report():
                 level_progress[level] = {
                     'accuracy': round(level_accuracy, 1),
                     'total_attempts': stats['total'],
-                    'correct_attempts': stats['correct'],
-                    'unlocked': True  # For now, all unlocked
+                    'correct_attempts': stats['correct']
                 }
             else:
                 level_progress[level] = {
                     'accuracy': 0,
                     'total_attempts': 0,
-                    'correct_attempts': 0,
-                    'unlocked': level == 'basic'
+                    'correct_attempts': 0
                 }
         
-        # Find skill gaps (words with low accuracy)
-        word_performance = defaultdict(lambda: {'correct': 0, 'total': 0})
-        for attempt in attempts:
-            word = attempt['word']
-            word_performance[word]['total'] += 1
-            if attempt['correct']:
-                word_performance[word]['correct'] += 1
-        
-        skill_gaps = []
-        for word, perf in word_performance.items():
-            if perf['total'] >= 2:  # At least 2 attempts
-                word_accuracy = (perf['correct'] / perf['total'] * 100)
-                if word_accuracy < 70:  # Struggling words
-                    skill_gaps.append({
-                        'word': word,
-                        'english': label_to_english.get(word, ''),
-                        'accuracy': round(word_accuracy, 1),
-                        'attempts': perf['total'],
-                        'suggestions': [
-                            'Watch the sign video carefully',
-                            'Practice the hand movements slowly',
-                            'Break down the word syllable by syllable'
-                        ]
-                    })
-        
-        skill_gaps.sort(key=lambda x: x['accuracy'])
-        
-        # Generate recommendations (words to practice next)
-        recommendations = []
-        for word, perf in word_performance.items():
-            word_accuracy = (perf['correct'] / perf['total'] * 100) if perf['total'] > 0 else 0
-            if 50 <= word_accuracy < 85:  # Words in progress
-                recommendations.append({
-                    'word': word,
-                    'english': label_to_english.get(word, ''),
-                    'accuracy': round(word_accuracy, 1),
-                    'priority': 1 if word_accuracy < 70 else 2,
-                    'reason': 'Good progress! Keep practicing to master this sign.'
-                })
-        
-        recommendations.sort(key=lambda x: (x['priority'], -x['accuracy']))
-        
-        # Calculate current level
-        avg_accuracy_by_level = {
-            level: (stats['correct'] / stats['total'] * 100) if stats['total'] > 0 else 0
-            for level, stats in level_stats.items()
-        }
-        
-        current_level = 'basic'
-        if avg_accuracy_by_level.get('basic', 0) >= 70:
-            current_level = 'easy'
-        if avg_accuracy_by_level.get('easy', 0) >= 70:
-            current_level = 'medium'
-        if avg_accuracy_by_level.get('medium', 0) >= 70:
-            current_level = 'hard'
-        
-        # Generate insights
-        insights = []
-        if accuracy >= 80:
-            insights.append("🌟 Excellent accuracy! You're mastering sign language.")
-        elif accuracy >= 60:
-            insights.append("👍 Good progress! Keep practicing to improve.")
-        else:
-            insights.append("💪 Keep going! Practice makes perfect.")
-        
-        if words_learned >= 20:
-            insights.append(f"🎓 You've learned {words_learned} words! Great vocabulary building.")
-        
-        if len(skill_gaps) > 0:
-            insights.append(f"🎯 Focus on {len(skill_gaps)} challenging words for faster progress.")
-        
-        # Achievements
-        achievements = []
-        if words_learned >= 5:
-            achievements.append({'name': 'First Steps', 'icon': '👣'})
-        if words_learned >= 10:
-            achievements.append({'name': 'Vocabulary Builder', 'icon': '📚'})
-        if accuracy >= 80:
-            achievements.append({'name': 'High Achiever', 'icon': '🏆'})
-        if total_attempts >= 20:
-            achievements.append({'name': 'Dedicated Learner', 'icon': '⭐'})
-        
-        # AI Predictions
-        next_level_score = min(accuracy + 10, 95)  # Predict slight improvement
-        confidence = 75 if total_attempts >= 10 else 50
-        time_to_master = "2-3 weeks" if accuracy >= 60 else "3-4 weeks"
-        
-        # Calculate playtime (approximate)
-        total_playtime_minutes = int(total_attempts * 1.5)  # Rough estimate: 1.5 min per attempt
-        
-        # Calculate streak (simplified - check recent days)
-        recent_dates = set()
-        for attempt in attempts[-20:]:  # Check last 20 attempts
-            attempt_date = attempt.get('timestamp', datetime.now()).date()
-            recent_dates.add(attempt_date)
-        current_streak = len(recent_dates)
-        
-        # Build report
         report = {
             'summary': {
                 'words_learned': words_learned,
                 'overall_accuracy': round(accuracy, 1),
-                'total_playtime_minutes': total_playtime_minutes,
-                'current_streak': current_streak,
-                'current_level': current_level,
-                'total_attempts': total_attempts,
-                'correct_attempts': correct_attempts
+                'total_attempts': total,
+                'correct_attempts': correct
             },
             'level_progress': level_progress,
-            'predictions': {
-                'next_level_score': round(next_level_score, 1),
-                'confidence': confidence,
-                'time_to_master': time_to_master
-            },
-            'achievements': achievements,
-            'insights': insights,
-            'skill_gaps': skill_gaps[:5],  # Top 5
-            'recommendations': recommendations[:5],  # Top 5
-            'next_level_unlocked': None  # Can add logic later
+            'insights': [
+                "🌟 Great progress!" if accuracy >= 70 else "💪 Keep practicing!"
+            ]
         }
         
-        print(f"✅ Generated report: {words_learned} words, {accuracy:.1f}% accuracy")
-        
-        return jsonify({
-            'success': True,
-            'report': report
-        })
+        return jsonify({'success': True, 'report': report})
         
     except Exception as e:
-        print(f"❌ Error generating progress report: {e}")
+        print(f"❌ Error: {e}")
         import traceback
         traceback.print_exc()
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+        return jsonify({'success': False, 'error': str(e)}), 500
 
-
-# Also make sure you have OPTIONS handler for CORS
-@app.route('/api/ai/progress-report', methods=['OPTIONS'])
-def progress_report_options():
-    return '', 204
 # ========================
 # RUN
 # ========================
@@ -702,12 +525,10 @@ if __name__ == "__main__":
     print("🎮 Sinhala Sign Language API")
     print(f"🌐 http://localhost:5001")
     print(f"📹 Videos: {len(VIDEO_MAPPING)} mapped")
+    print(f"🔗 MongoDB: {'Connected' if mongodb_manager else 'Not connected'}")
     print("="*70 + "\n")
-    # Register graceful shutdown to close MongoDB connection if available
-    try:
-        if mongodb_manager and hasattr(mongodb_manager, 'disconnect'):
-            atexit.register(lambda: mongodb_manager.disconnect())
-    except Exception:
-        pass
-
+    
+    if mongodb_manager and hasattr(mongodb_manager, 'disconnect'):
+        atexit.register(mongodb_manager.disconnect)
+    
     app.run(host="0.0.0.0", port=5001, debug=True)

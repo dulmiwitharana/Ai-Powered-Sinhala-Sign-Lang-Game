@@ -1,7 +1,7 @@
 import { useNavigate } from "react-router-dom";
 import { 
   Star, Clock, Trophy, Sparkles, ChevronRight, Play, Award, 
-  Brain, TrendingUp, BarChart 
+  Brain, TrendingUp, BarChart, User, LogOut
 } from "lucide-react";
 import { useEffect, useState } from "react";
 
@@ -9,6 +9,7 @@ export default function GameSelection() {
   const navigate = useNavigate();
   const [userData, setUserData] = useState(null);
   const [showAnalyticsBtn, setShowAnalyticsBtn] = useState(false);
+  const [showQuizScore, setShowQuizScore] = useState(false);
 
   // Load user data from localStorage
   useEffect(() => {
@@ -20,12 +21,20 @@ export default function GameSelection() {
       // Show analytics button if user has taken quiz
       if (parsedUser.hasTakenQuiz) {
         setShowAnalyticsBtn(true);
+        setShowQuizScore(true);
       }
     } else {
       // No user registered, redirect to form
       navigate('/game-register');
     }
   }, [navigate]);
+
+  const handleLogout = () => {
+    localStorage.removeItem('user');
+    localStorage.removeItem('gameUser');
+    localStorage.removeItem('gameUserId');
+    navigate('/game-register');
+  };
 
   if (!userData) {
     return (
@@ -47,53 +56,111 @@ export default function GameSelection() {
   // Calculate progress percentage
   const masteryProgress = (userProgress.masteredWords / 50) * 100;
 
+  // Get quiz score display
+  const getQuizScoreDisplay = () => {
+    if (!userData.hasTakenQuiz || !showQuizScore) return null;
+    
+    const score = userData.quizScore || 0;
+    const total = userData.quizTotal || 0;
+    const percentage = userData.quizPercentage || 0;
+    
+    // Grade 1 students have auto-quiz with 0/0
+    if (total === 0 && userData.grade === '1') {
+      return (
+        <div className="flex items-center gap-3 px-4 py-2 bg-green-100 rounded-lg border border-green-200">
+          <Award className="w-5 h-5 text-green-600" />
+          <div className="text-left">
+            <div className="text-xs text-green-800 font-medium">Grade 1 Student</div>
+            <div className="text-sm font-bold text-green-700">Basic Level (Auto-set)</div>
+          </div>
+        </div>
+      );
+    }
+    
+    return (
+      <div className="flex items-center gap-3 px-4 py-2 bg-yellow-50 rounded-lg border border-yellow-200">
+        <Trophy className="w-5 h-5 text-yellow-600" />
+        <div className="text-left">
+          <div className="text-xs text-yellow-800 font-medium">Quiz Score</div>
+          <div className="flex items-center gap-2">
+            <span className="text-lg font-bold text-yellow-700">
+              {score}/{total}
+            </span>
+            <span className="text-sm font-medium text-yellow-600">
+              ({percentage}%)
+            </span>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-purple-400 via-pink-300 to-yellow-300 p-3">
-      {/* Header */}
-      <div className="bg-white rounded-2xl shadow-md p-3 mb-3">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-2 md:gap-3">
-          <div className="flex items-center gap-3 md:gap-4">
-            <div className="w-10 h-10 md:w-12 md:h-12 bg-gradient-to-br from-purple-500 to-pink-500 rounded-full flex items-center justify-center text-white text-lg md:text-xl font-bold">
-              {userData.name?.substring(0, 2).toUpperCase() || 'SS'}
-            </div>
-            <div>
-              <h2 className="text-xl md:text-2xl font-bold text-gray-800">
-                හෙලෝ, {userData.name}!
-              </h2>
-              <p className="text-gray-600 text-sm md:text-base">
-                Level {userProgress.level}
-              </p>
-            </div>
-          </div>
-          
-          <div className="flex items-center gap-4 md:gap-6">
-            <div className="text-center">
-              <div className="flex items-center gap-1 text-yellow-500 text-base md:text-lg">
-                <Star fill="currentColor" className="w-4 h-4 md:w-5 md:h-5" />
-                <span className="font-bold">{userProgress.totalStars}</span>
+      {/* Fixed Navigation Bar with Quiz Score */}
+      <div className="sticky top-0 z-50 mb-3">
+        <div className="bg-white/90 backdrop-blur-sm rounded-2xl shadow-lg p-3">
+          <div className="flex items-center justify-between">
+            {/* User Info */}
+            <div className="flex items-center gap-3">
+              <div className="w-12 h-12 bg-gradient-to-br from-purple-500 to-pink-500 rounded-full flex items-center justify-center text-white text-xl font-bold">
+                {userData.name?.substring(0, 2).toUpperCase() || 'SS'}
               </div>
-              <p className="text-xs text-gray-600">Stars</p>
-            </div>
-            <div className="text-center">
-              <div className="flex items-center gap-1 text-blue-500 text-lg md:text-xl">
-                <Clock className="w-5 h-5 md:w-6 md:h-6" />
-                <span className="font-bold">{userProgress.dailyTimeLeft}</span>
+              <div>
+                <h2 className="text-lg font-bold text-gray-800">
+                  හෙලෝ, {userData.name}!
+                </h2>
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-gray-600">Level {userProgress.level}</span>
+                  {userData.recommendedLevel && (
+                    <>
+                      <span className="text-gray-400">•</span>
+                      <span className="text-sm font-medium text-purple-600 capitalize">
+                        {userData.recommendedLevel}
+                      </span>
+                    </>
+                  )}
+                </div>
               </div>
-              <p className="text-xs text-gray-600">Minutes Left</p>
             </div>
-            <div className="text-center">
-              <div className="flex items-center gap-1 text-green-500 text-lg md:text-xl">
-                <TrendingUp className="w-5 h-5 md:w-6 md:h-6" />
-                <span className="font-bold">{userProgress.streak}</span>
+
+            {/* Quiz Score Display - Always visible if quiz taken */}
+            {showQuizScore && getQuizScoreDisplay()}
+
+            {/* Stats & Logout */}
+            <div className="flex items-center gap-4">
+              <div className="hidden md:flex items-center gap-6">
+                <div className="text-center">
+                  <div className="flex items-center gap-1 text-yellow-500 text-lg">
+                    <Star fill="currentColor" className="w-5 h-5" />
+                    <span className="font-bold">{userProgress.totalStars}</span>
+                  </div>
+                  <p className="text-xs text-gray-600">Stars</p>
+                </div>
+                <div className="text-center">
+                  <div className="flex items-center gap-1 text-blue-500 text-xl">
+                    <Clock className="w-6 h-6" />
+                    <span className="font-bold">{userProgress.dailyTimeLeft}</span>
+                  </div>
+                  <p className="text-xs text-gray-600">Minutes</p>
+                </div>
               </div>
-              <p className="text-xs text-gray-600">Day Streak</p>
+              
+              <button
+                onClick={handleLogout}
+                className="flex items-center gap-2 px-4 py-2 text-sm bg-red-50 text-red-600 hover:bg-red-100 rounded-lg transition-colors"
+                title="Logout"
+              >
+                <LogOut className="w-4 h-4" />
+                <span className="hidden md:inline">Logout</span>
+              </button>
             </div>
           </div>
         </div>
       </div>
 
-      {/* Recommendation Badge */}
-      {userData.recommendedLevel && (
+      {/* Recommendation Banner (Only for first time or if not showing quiz score) */}
+      {userData.recommendedLevel && !showQuizScore && (
         <div className="bg-gradient-to-r from-yellow-400 to-orange-400 rounded-xl shadow-md p-3 mb-3 text-white text-sm">
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-2">
             <div className="flex items-center gap-3">
@@ -105,12 +172,14 @@ export default function GameSelection() {
                 </p>
               </div>
             </div>
-            <div className="text-left md:text-right">
-              <p className="text-xs">Quiz Score</p>
-              <p className="font-bold text-xl">
-                {userData.quizScore || 0}/{userData.quizTotal || 10}
-              </p>
-            </div>
+            {userData.quizScore !== undefined && userData.quizTotal !== undefined && (
+              <div className="text-left md:text-right">
+                <p className="text-xs">Quiz Score</p>
+                <p className="font-bold text-xl">
+                  {userData.quizScore || 0}/{userData.quizTotal || 10}
+                </p>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -274,7 +343,7 @@ export default function GameSelection() {
       )}
 
       {/* Quick Actions Footer */}
-      <div className="mt-4 md:mt-6 grid grid-cols-2 gap-2">
+      <div className="mt-4 md:mt-6 grid grid-cols-3 gap-2">
         <button
           onClick={() => navigate('/game-register')}
           className="bg-white rounded-lg p-2 text-center hover:bg-gray-50 transition-colors"
@@ -289,7 +358,48 @@ export default function GameSelection() {
           <div className="text-lg">📊</div>
           <div className="text-xs font-medium">Analytics</div>
         </button>
+        <button
+          onClick={() => navigate('/game-history')}
+          className="bg-blue-600 rounded-lg p-2 text-center text-white hover:bg-blue-700 transition-colors"
+        >
+          <div className="text-lg">📝</div>
+          <div className="text-xs font-medium">History</div>
+        </button>
       </div>
+
+      {/* Quiz Status Summary */}
+      {showQuizScore && (
+        <div className="mt-4 p-3 bg-white rounded-xl shadow-md">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Trophy className="w-5 h-5 text-yellow-500" />
+              <span className="font-medium text-gray-700">Quiz Status:</span>
+            </div>
+            <div className="flex items-center gap-4">
+              <div className="text-center">
+                <div className="text-sm text-gray-600">Level</div>
+                <div className="text-lg font-bold text-purple-600 capitalize">
+                  {userData.recommendedLevel || 'basic'}
+                </div>
+              </div>
+              <div className="text-center">
+                <div className="text-sm text-gray-600">Completed</div>
+                <div className="text-lg font-bold text-green-600">
+                  {userData.hasTakenQuiz ? 'Yes' : 'No'}
+                </div>
+              </div>
+              {userData.quizPercentage > 0 && (
+                <div className="text-center">
+                  <div className="text-sm text-gray-600">Score</div>
+                  <div className="text-lg font-bold text-blue-600">
+                    {userData.quizPercentage}%
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
