@@ -26,6 +26,30 @@ const GameUserForm = () => {
   const [hintWord, setHintWord] = useState('');
   const AI_API = 'http://localhost:5001/api/ai/generate-hint';
 
+  // Helper function to get JWT token
+  const getAuthToken = () => {
+    return localStorage.getItem('authToken');
+  };
+
+  // Helper function to make authenticated API calls
+  const authenticatedFetch = async (url, options = {}) => {
+    const token = getAuthToken();
+    
+    const headers = {
+      'Content-Type': 'application/json',
+      ...options.headers
+    };
+    
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+    
+    return fetch(url, {
+      ...options,
+      headers
+    });
+  };
+
   useEffect(() => {
     checkUserStatus();
   }, [location]);
@@ -39,13 +63,11 @@ const GameUserForm = () => {
   };
 
   const checkUserStatus = async () => {
-    // Check if user is logged in via localStorage
     const storedUser = JSON.parse(localStorage.getItem('user') || localStorage.getItem('gameUser') || 'null');
     const state = location.state || {};
     
     console.log("Checking user status, stored user:", storedUser, "state:", state);
     
-    // If just logged in (state passed from Login page)
     if (state.fromLogin && storedUser && !storedUser?.hasTakenQuiz) {
       console.log("New login detected, showing registration form");
       if (storedUser && storedUser.name) {
@@ -59,11 +81,9 @@ const GameUserForm = () => {
       return;
     }
     
-    // If user exists but hasn't taken quiz OR we don't know quiz status
     if (storedUser && storedUser._id) {
       try {
-        // Check if user has already taken quiz from server
-        const response = await fetch(`${API_URL}/user/${storedUser._id}/quiz-status`);
+        const response = await authenticatedFetch(`${API_URL}/user/quiz-status`);
         
         if (!response.ok) {
           throw new Error(`HTTP error! status: ${response.status}`);
@@ -74,7 +94,6 @@ const GameUserForm = () => {
         
         if (data.success) {
           if (data.hasTakenQuiz || storedUser.hasTakenQuiz) {
-            // User has already taken quiz, go directly to game selection
             const gameUser = {
               ...storedUser,
               hasTakenQuiz: true,
@@ -88,13 +107,11 @@ const GameUserForm = () => {
             if (gameUser._id) localStorage.setItem('gameUserId', gameUser._id);
             
             setStep('goToGames');
-            // Automatically navigate to games after 1 second
             setTimeout(() => {
               navigate('/gameselection');
             }, 1000);
             return;
           } else {
-            // User hasn't taken quiz yet - show quiz intro
             if (storedUser.name) {
               setFormData(prev => ({
                 ...prev,
@@ -109,7 +126,6 @@ const GameUserForm = () => {
             return;
           }
         } else {
-          // If API fails but user exists in localStorage with quiz status
           if (storedUser.hasTakenQuiz) {
             console.log("API failed but localStorage shows quiz taken");
             setUserData(storedUser);
@@ -119,13 +135,11 @@ const GameUserForm = () => {
             }, 1000);
             return;
           }
-          // Fallback to registration
           setStep('register');
         }
       } catch (error) {
         console.error('Error checking user status:', error);
         
-        // Fallback: Check localStorage for quiz status
         if (storedUser.hasTakenQuiz) {
           console.log("Using localStorage data due to API error");
           setUserData(storedUser);
@@ -138,7 +152,6 @@ const GameUserForm = () => {
         }
       }
     } else {
-      // No user found, show registration
       setStep('register');
     }
   };
@@ -160,31 +173,33 @@ const GameUserForm = () => {
       const data = await response.json();
 
       if (data.success) {
+        // Store JWT token
+        if (data.token) {
+          localStorage.setItem('authToken', data.token);
+          console.log('✅ JWT token stored');
+        }
+
         const user = {
-          _id: data.user_id,
-          mongoId: data.mongo_id,
-          name: data.name || formData.name,
+          _id: data.user._id,
+          mongoId: data.user._id,
+          name: data.user.name || formData.name,
           userType: formData.user_type,
           grade: formData.grade,
-          hasTakenQuiz: data.hasTakenQuiz || false,
-          recommendedLevel: data.recommendedLevel || 'basic'
+          hasTakenQuiz: data.user.hasTakenQuiz || false,
+          recommendedLevel: data.user.recommendedLevel || 'basic'
         };
         
         setUserData(user);
         localStorage.setItem('user', JSON.stringify(user));
         localStorage.setItem('gameUser', JSON.stringify(user));
-        if (data.user_id) localStorage.setItem('gameUserId', data.user_id);
+        if (data.user._id) localStorage.setItem('gameUserId', data.user._id);
         
-        // Grade 1 students skip quiz and go directly to games with basic level
         if (formData.grade === '1') {
           console.log('Grade 1 student detected - skipping quiz, setting basic level');
           
-          // Auto-submit quiz with basic level for grade 1
-          const saveResponse = await fetch(`${API_URL}/quiz/submit`, {
+          const saveResponse = await authenticatedFetch(`${API_URL}/quiz/submit`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              user_id: data.user_id,
               answers: [],
               recommendedLevel: 'basic',
               quizScore: 0,
@@ -205,18 +220,15 @@ const GameUserForm = () => {
           localStorage.setItem('user', JSON.stringify(updatedUser));
           localStorage.setItem('gameUser', JSON.stringify(updatedUser));
           
-          // Navigate to game selection directly
           setTimeout(() => {
             navigate('/gameselection');
           }, 800);
-        } else if (data.hasTakenQuiz) {
-          // User already took quiz before (shouldn't happen with new registration)
+        } else if (data.user.hasTakenQuiz) {
           setStep('goToGames');
           setTimeout(() => {
             navigate('/gameselection');
           }, 1000);
         } else {
-          // Grades 2-5: show quiz intro
           setStep('quizIntro');
         }
       } else {
@@ -234,7 +246,9 @@ const GameUserForm = () => {
     try {
       setLoading(true);
       console.log(`Loading quiz for grade: ${formData.grade}`);
-      const response = await fetch(`${API_URL}/questions/quiz/${formData.grade}`);
+      
+      // Use authenticatedFetch to include JWT token
+      const response = await authenticatedFetch(`${API_URL}/questions/quiz/${formData.grade}`);
       const data = await response.json();
       
       console.log("Quiz data response:", data);
@@ -245,7 +259,7 @@ const GameUserForm = () => {
         setQuizAnswers([]);
         setStep('quiz');
       } else {
-        alert('Failed to load quiz questions: ' + (data.error || 'No questions available'));
+        alert('Failed to load quiz questions: ' + (data.error || data.message || 'No questions available'));
       }
     } catch (error) {
       console.error('Quiz load error:', error);
@@ -276,9 +290,8 @@ const GameUserForm = () => {
     try {
       setLoading(true);
       
-      const validateResponse = await fetch(`${API_URL}/questions/validate`, {
+      const validateResponse = await authenticatedFetch(`${API_URL}/questions/validate`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ answers })
       });
       
@@ -308,12 +321,9 @@ const GameUserForm = () => {
           }
         }
         
-        // Save quiz results - this will mark hasTakenQuiz as true
-        const saveResponse = await fetch(`${API_URL}/quiz/submit`, {
+        const saveResponse = await authenticatedFetch(`${API_URL}/quiz/submit`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            user_id: userData._id,
             answers: validateData.results,
             recommendedLevel,
             quizScore: correct,
@@ -325,7 +335,6 @@ const GameUserForm = () => {
         const saveData = await saveResponse.json();
         console.log("Quiz save response:", saveData);
         
-        // Update local storage with quiz completion
         const updatedUser = {
           ...userData,
           hasTakenQuiz: true,
@@ -395,7 +404,6 @@ const GameUserForm = () => {
     }
   };
 
-  // Direct navigation to games for users who already completed quiz
   const goDirectToGames = () => {
     navigate('/gameselection');
   };
@@ -450,10 +458,10 @@ const GameUserForm = () => {
           
           <button
             onClick={() => {
-              // Clear localStorage and restart
               localStorage.removeItem('user');
               localStorage.removeItem('gameUser');
               localStorage.removeItem('gameUserId');
+              localStorage.removeItem('authToken');
               setStep('register');
             }}
             className="text-sm text-red-600 hover:text-red-800 underline"

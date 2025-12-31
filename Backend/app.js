@@ -1,12 +1,42 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
+const jwt = require('jsonwebtoken');
+const bcrypt = require('bcryptjs');
 require('dotenv').config();
 
 const userRoutes = require('./route/userroutes');
 const gameProfileRoutes = require('./route/gameProfileRoutes');
 
 const app = express();
+
+// ========================
+// JWT CONFIGURATION
+// ========================
+const JWT_SECRET = process.env.JWT_SECRET || 'Hf7&9dJk2!vLxQp8rTgMzS4wYb6eW1u3';
+
+// JWT Middleware
+const verifyToken = (req, res, next) => {
+  const token = req.header('Authorization')?.replace('Bearer ', '');
+  
+  if (!token) {
+    return res.status(401).json({ 
+      success: false, 
+      message: 'No token provided, authorization denied' 
+    });
+  }
+  
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    req.userId = decoded.id;
+    next();
+  } catch (error) {
+    return res.status(401).json({ 
+      success: false, 
+      message: 'Token is not valid or has expired' 
+    });
+  }
+};
 
 // ========================
 // MIDDLEWARE
@@ -16,36 +46,25 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // ========================
-// MONGODB CONNECTION (with retry/backoff for transient DNS/startup issues)
+// MONGODB CONNECTION
 // ========================
 const MONGODB_URI = process.env.MONGODB_URI;
 
-mongoose.set('strictQuery', false);
-
-const MAX_MONGO_RETRIES = 10;
-
-const connectWithRetry = async (attempt = 0) => {
+const connectDB = async () => {
   try {
     await mongoose.connect(MONGODB_URI, {
-      serverSelectionTimeoutMS: 5000,
       useNewUrlParser: true,
       useUnifiedTopology: true
     });
     console.log('✅ MongoDB Connected Successfully');
     console.log(`📊 Database: ${mongoose.connection.name}`);
   } catch (error) {
-    console.error(`❌ MongoDB Connection Error (attempt ${attempt + 1}):`, error.message);
-    if (attempt < MAX_MONGO_RETRIES - 1) {
-      const delay = Math.min(30000, 1000 * Math.pow(2, attempt));
-      console.log(`⏳ Retrying MongoDB connection in ${delay}ms...`);
-      setTimeout(() => connectWithRetry(attempt + 1), delay);
-    } else {
-      console.error('❌ Maximum MongoDB connection attempts reached. Continuing without DB; some routes may fail.');
-    }
+    console.error('❌ MongoDB Connection Error:', error.message);
+    process.exit(1);
   }
 };
 
-connectWithRetry();
+connectDB();
 
 // ========================
 // MONGOOSE EVENTS
@@ -80,21 +99,21 @@ app.use('/users', userRoutes);
 app.use('/api/game', gameProfileRoutes);
 
 // ========================
-// QUESTION/QUIZ ROUTES (INLINE - NO EXTERNAL FILE)
+// QUESTION/QUIZ ROUTES
 // ========================
-app.get('/api/questions/test', (req, res) => {
+app.get('/api/questions/test', verifyToken, (req, res) => {
   res.json({
     success: true,
-    message: 'Question routes are working inline!'
+    message: 'Question routes are working!',
+    userId: req.userId
   });
 });
 
-app.get('/api/questions/quiz/:grade', async (req, res) => {
+app.get('/api/questions/quiz/:grade', verifyToken, async (req, res) => {
   try {
     const grade = req.params.grade;
-    console.log(`📚 Quiz request for Grade ${grade}`);
+    console.log(`📚 Quiz request for Grade ${grade} by user ${req.userId}`);
     
-    // Check MongoDB connection
     if (mongoose.connection.readyState !== 1) {
       return res.status(500).json({
         success: false,
@@ -102,13 +121,8 @@ app.get('/api/questions/quiz/:grade', async (req, res) => {
       });
     }
     
-    // Use the correct collection name: 'questions'
     const questionsCollection = mongoose.connection.db.collection('questions');
-    
-    // Try to find any document in the questions collection
     const quizDoc = await questionsCollection.findOne({});
-    
-    console.log('📄 Questions doc found:', quizDoc ? 'YES' : 'NO');
     
     if (!quizDoc) {
       return res.status(404).json({
@@ -117,111 +131,6 @@ app.get('/api/questions/quiz/:grade', async (req, res) => {
       });
     }
     
-    console.log('📄 Document structure keys:', Object.keys(quizDoc));
-    
-    // Check the structure - from your data, it has a quizDatabase field
-    let quizData = quizDoc;
-    
-    // If the document has a quizDatabase field, use that
-    if (quizDoc.quizDatabase) {
-      quizData = quizDoc.quizDatabase;
-      console.log('✅ Using nested quizDatabase field');
-    }
-    
-    // Check if we have grades
-    if (!quizData.grades) {
-      return res.status(404).json({
-        success: false,
-        error: 'No grades found in quiz data',
-        availableKeys: Object.keys(quizData)
-      });
-    }
-    
-    // Get the specific grade
-    const gradeKey = `grade${grade}`;
-    const gradeData = quizData.grades[gradeKey];
-    
-    if (!gradeData) {
-      return res.status(404).json({
-        success: false,
-        error: `Grade ${grade} not found`,
-        availableGrades: Object.keys(quizData.grades)
-      });
-    }
-    
-    const questions = gradeData.questions || [];
-    
-    if (questions.length === 0) {
-      return res.status(404).json({
-        success: false,
-        error: `No questions found for Grade ${grade}`
-      });
-    }
-    
-    // Select 3 random questions
-    const shuffled = [...questions].sort(() => 0.5 - Math.random());
-    const selected = shuffled.slice(0, 3);
-    
-    console.log(`✅ Returning ${selected.length} questions for Grade ${grade}`);
-    
-    res.json({
-      success: true,
-      grade: grade,
-      questionCount: selected.length,
-      totalAvailable: questions.length,
-      questions: selected.map(q => ({
-        id: q.id,
-        type: q.type,
-        visualType: q.visualType,
-        imageUrl: q.imageUrl,
-        videoUrl: q.videoUrl,
-        signDescription: q.signDescription,
-        imageDescription: q.imageDescription,
-        question: q.question,
-        options: q.options,
-        difficulty: q.difficulty
-      })),
-      answerKey: selected.map(q => ({
-        id: q.id,
-        correctAnswer: q.correctAnswer
-      }))
-    });
-    
-  } catch (error) {
-    console.error('❌ Quiz error:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
-    });
-  }
-});
-
-app.post('/api/questions/validate', async (req, res) => {
-  try {
-    const { answers } = req.body;
-    
-    if (!answers || !Array.isArray(answers)) {
-      return res.status(400).json({
-        success: false,
-        error: 'Invalid answers format'
-      });
-    }
-    
-    console.log(`🔍 Validating ${answers.length} answers`);
-    
-    // Get quiz data from questions collection
-    const questionsCollection = mongoose.connection.db.collection('questions');
-    const quizDoc = await questionsCollection.findOne({});
-    
-    if (!quizDoc) {
-      return res.status(404).json({
-        success: false,
-        error: 'Quiz data not found'
-      });
-    }
-    
-    // Handle nested structure
     let quizData = quizDoc;
     if (quizDoc.quizDatabase) {
       quizData = quizDoc.quizDatabase;
@@ -234,7 +143,88 @@ app.post('/api/questions/validate', async (req, res) => {
       });
     }
     
-    // Collect all questions from all grades
+    const gradeKey = `grade${grade}`;
+    const gradeData = quizData.grades[gradeKey];
+    
+    if (!gradeData) {
+      return res.status(404).json({
+        success: false,
+        error: `Grade ${grade} not found`
+      });
+    }
+    
+    const questions = gradeData.questions || [];
+    
+    if (questions.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: `No questions found for Grade ${grade}`
+      });
+    }
+    
+    const shuffled = [...questions].sort(() => 0.5 - Math.random());
+    const selected = shuffled.slice(0, 3);
+    
+    res.json({
+      success: true,
+      grade: grade,
+      questionCount: selected.length,
+      questions: selected.map(q => ({
+        id: q.id,
+        type: q.type,
+        visualType: q.visualType,
+        imageUrl: q.imageUrl,
+        videoUrl: q.videoUrl,
+        signDescription: q.signDescription,
+        imageDescription: q.imageDescription,
+        question: q.question,
+        options: q.options,
+        difficulty: q.difficulty
+      }))
+    });
+    
+  } catch (error) {
+    console.error('❌ Quiz error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+app.post('/api/questions/validate', verifyToken, async (req, res) => {
+  try {
+    const { answers } = req.body;
+    
+    if (!answers || !Array.isArray(answers)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid answers format'
+      });
+    }
+    
+    const questionsCollection = mongoose.connection.db.collection('questions');
+    const quizDoc = await questionsCollection.findOne({});
+    
+    if (!quizDoc) {
+      return res.status(404).json({
+        success: false,
+        error: 'Quiz data not found'
+      });
+    }
+    
+    let quizData = quizDoc;
+    if (quizDoc.quizDatabase) {
+      quizData = quizDoc.quizDatabase;
+    }
+    
+    if (!quizData.grades) {
+      return res.status(404).json({
+        success: false,
+        error: 'No grades found in quiz data'
+      });
+    }
+    
     const allQuestions = [];
     for (const gradeKey in quizData.grades) {
       if (quizData.grades[gradeKey].questions) {
@@ -242,7 +232,6 @@ app.post('/api/questions/validate', async (req, res) => {
       }
     }
     
-    // Validate each answer
     const results = [];
     let correctCount = 0;
     
@@ -273,8 +262,6 @@ app.post('/api/questions/validate', async (req, res) => {
     const total = answers.length;
     const percentage = total > 0 ? ((correctCount / total) * 100).toFixed(2) : '0.00';
     
-    console.log(`✅ Score: ${correctCount}/${total} (${percentage}%)`);
-    
     res.json({
       success: true,
       results: results,
@@ -293,13 +280,13 @@ app.post('/api/questions/validate', async (req, res) => {
     });
   }
 });
+
 // ========================
-// REGISTRATION ENDPOINT
+// REGISTRATION ENDPOINT WITH JWT + BCRYPT
 // ========================
 const User = require('./model/usermodel');
 const GameProfile = require('./model/GameProfile');
 
-// Update the registration endpoint
 app.post('/api/register', async (req, res) => {
   try {
     const { name, user_type, grade } = req.body;
@@ -311,44 +298,56 @@ app.post('/api/register', async (req, res) => {
       });
     }
 
+    // Generate unique email
+    const email = `${name.toLowerCase().replace(/\s+/g, '')}${Date.now()}@game.local`;
+    const password = 'gameuser123';
+    
     // Check if user already exists
-    const existingUser = await User.findOne({ 
-      email: `${name.toLowerCase().replace(/\s+/g, '')}@game.local` 
-    });
-
+    let existingUser = await User.findOne({ email: email });
+    
     if (existingUser) {
-      // User exists, get their profile
+      // User exists - generate token
+      const token = jwt.sign(
+        { id: existingUser._id, email: existingUser.email },
+        JWT_SECRET,
+        { expiresIn: '7d' }
+      );
+      
       const gameProfile = await GameProfile.findOne({ userId: existingUser._id });
       
       return res.json({
         success: true,
-        user_id: existingUser._id,
-        mongo_id: gameProfile?._id || null,
-        name: existingUser.name,
-        hasTakenQuiz: existingUser.hasTakenQuiz || false,
-        recommendedLevel: existingUser.recommendedLevel || 'basic',
-        message: 'User already exists'
+        token: token,
+        user: {
+          _id: existingUser._id,
+          name: existingUser.name,
+          email: existingUser.email,
+          hasTakenQuiz: existingUser.hasTakenQuiz || false,
+          recommendedLevel: existingUser.recommendedLevel || 'basic',
+          gameProfile: gameProfile
+        },
+        message: 'Welcome back!'
       });
     }
 
-    // Create new user
-    const email = `${name.toLowerCase().replace(/\s+/g, '')}@game.local`;
-    const password = 'gameuser123';
+    // Create new user with hashed password
+    const hashedPassword = await bcrypt.hash(password, 10);
     const age = grade ? parseInt(grade) + 6 : 10;
 
-    const mongoUser = new User({
+    const newUser = new User({
       name: name,
       email: email,
-      password: password,
+      password: hashedPassword,
       age: age,
-      hasTakenQuiz: false
+      hasTakenQuiz: false,
+      recommendedLevel: 'basic'
     });
     
-    await mongoUser.save();
+    await newUser.save();
 
     // Create game profile
     const gameProfile = new GameProfile({
-      userId: mongoUser._id,
+      userId: newUser._id,
       userType: user_type || 'student',
       grade: grade || '2',
       recommendedLevel: 'basic',
@@ -357,15 +356,24 @@ app.post('/api/register', async (req, res) => {
 
     await gameProfile.save();
 
-    console.log(`✅ Registered: ${name} (${user_type}, Grade ${grade})`);
+    // Generate JWT token
+    const token = jwt.sign(
+      { id: newUser._id, email: newUser.email },
+      JWT_SECRET,
+      { expiresIn: '7d' }
+    );
 
     res.json({
       success: true,
-      user_id: mongoUser._id,
-      mongo_id: gameProfile._id.toString(),
-      name: mongoUser.name,
-      hasTakenQuiz: false,
-      recommendedLevel: 'basic',
+      token: token,
+      user: {
+        _id: newUser._id,
+        name: newUser.name,
+        email: newUser.email,
+        hasTakenQuiz: false,
+        recommendedLevel: 'basic',
+        gameProfile: gameProfile
+      },
       message: 'Registration successful'
     });
 
@@ -378,25 +386,19 @@ app.post('/api/register', async (req, res) => {
   }
 });
 
-// Update quiz submission endpoint
-app.post('/api/quiz/submit', async (req, res) => {
+// ========================
+// QUIZ SUBMISSION WITH TOKEN VERIFICATION
+// ========================
+app.post('/api/quiz/submit', verifyToken, async (req, res) => {
   try {
-    const { user_id, answers, recommendedLevel, quizScore, quizTotal, quizPercentage } = req.body;
+    const { answers, recommendedLevel, quizScore, quizTotal, quizPercentage } = req.body;
+    const userId = req.userId;
 
-    console.log('📝 /api/quiz/submit received payload:', {
-      user_id,
-      recommendedLevel,
-      quizScore,
-      quizTotal,
-      quizPercentage,
-      answersCount: Array.isArray(answers) ? answers.length : 0
-    });
-
-    console.log(`🎯 Recommended Level: ${recommendedLevel}`);
+    console.log(`📝 Quiz submitted by ${userId}: ${quizScore}/${quizTotal} (${quizPercentage}%)`);
 
     // Update user
     const userUpdate = await User.findByIdAndUpdate(
-      user_id,
+      userId,
       {
         hasTakenQuiz: true,
         quizCompletedAt: new Date(),
@@ -405,11 +407,16 @@ app.post('/api/quiz/submit', async (req, res) => {
       { new: true }
     );
 
-    console.log('🔁 User update result:', !!userUpdate, userUpdate?._id);
+    if (!userUpdate) {
+      return res.status(404).json({
+        success: false,
+        error: 'User not found'
+      });
+    }
 
-    // Update game profile and capture the returned document
+    // Update game profile
     const profileUpdate = await GameProfile.findOneAndUpdate(
-      { userId: user_id },
+      { userId: userId },
       {
         hasTakenQuiz: true,
         quizScore: quizScore,
@@ -418,25 +425,19 @@ app.post('/api/quiz/submit', async (req, res) => {
         quizCompletedAt: new Date(),
         recommendedLevel: recommendedLevel
       },
-      { new: true }
+      { new: true, upsert: true }
     );
-
-    console.log('🔁 GameProfile update result:', !!profileUpdate, profileUpdate?._id);
-
-    if (!userUpdate) {
-      console.warn('⚠️ User not found for quiz submit:', user_id);
-    }
-
-    if (!profileUpdate) {
-      console.warn('⚠️ GameProfile not found for user:', user_id);
-    }
 
     res.json({
       success: true,
       message: 'Quiz results saved',
       recommendedLevel: recommendedLevel,
-      userUpdated: !!userUpdate,
-      profileUpdated: !!profileUpdate
+      user: {
+        _id: userUpdate._id,
+        name: userUpdate.name,
+        hasTakenQuiz: userUpdate.hasTakenQuiz,
+        recommendedLevel: userUpdate.recommendedLevel
+      }
     });
 
   } catch (error) {
@@ -448,13 +449,13 @@ app.post('/api/quiz/submit', async (req, res) => {
   }
 });
 
-// Add this endpoint in your server.js after other routes
-app.get('/api/user/:userId/quiz-status', async (req, res) => {
+// ========================
+// USER QUIZ STATUS WITH TOKEN VERIFICATION
+// ========================
+app.get('/api/user/quiz-status', verifyToken, async (req, res) => {
   try {
-    const { userId } = req.params;
+    const userId = req.userId;
     
-    // Check if user exists
-    const User = require('./model/usermodel');
     const user = await User.findById(userId);
     
     if (!user) {
@@ -464,18 +465,19 @@ app.get('/api/user/:userId/quiz-status', async (req, res) => {
       });
     }
     
-    // Check game profile
-    const GameProfile = require('./model/GameProfile');
     const profile = await GameProfile.findOne({ userId });
     
     res.json({
       success: true,
-      hasTakenQuiz: profile ? profile.hasTakenQuiz : false,
-      recommendedLevel: profile ? profile.recommendedLevel : 'basic',
+      hasTakenQuiz: user.hasTakenQuiz || false,
+      recommendedLevel: user.recommendedLevel || profile?.recommendedLevel || 'basic',
       name: user.name,
-      profile: profile
+      quizScore: profile?.quizScore || 0,
+      quizTotal: profile?.quizTotal || 0,
+      quizPercentage: profile?.quizPercentage || 0
     });
   } catch (error) {
+    console.error('❌ Quiz status error:', error);
     res.status(500).json({
       success: false,
       error: error.message
@@ -484,31 +486,25 @@ app.get('/api/user/:userId/quiz-status', async (req, res) => {
 });
 
 // ========================
-// DEBUG ENDPOINT
+// DEBUG ENDPOINT (PROTECTED)
 // ========================
-app.get('/api/test-questions', async (req, res) => {
+app.get('/api/test-questions', verifyToken, async (req, res) => {
   try {
     const collections = await mongoose.connection.db.listCollections().toArray();
     const collectionNames = collections.map(c => c.name);
     
-    // Try to get quiz data
-    const quizCollection = mongoose.connection.db.collection('quizDatabase');
+    const quizCollection = mongoose.connection.db.collection('questions');
     const count = await quizCollection.countDocuments();
     const allDocs = await quizCollection.find({}).limit(5).toArray();
     
     res.json({
       success: true,
-      message: 'Backend is working',
       collections: collectionNames,
-      quizDatabase: {
+      questionsCollection: {
         documentCount: count,
-        sampleDocs: allDocs.map(doc => ({
-          _id: doc._id,
-          hasQuizDatabase: !!doc.quizDatabase,
-          hasGrades: !!doc.grades,
-          topLevelKeys: Object.keys(doc)
-        }))
-      }
+        sampleDocs: allDocs
+      },
+      userId: req.userId
     });
   } catch (error) {
     res.json({
@@ -518,17 +514,13 @@ app.get('/api/test-questions', async (req, res) => {
   }
 });
 
-
 // ========================
 // 404 HANDLER
 // ========================
 app.use((req, res) => {
-  console.log(`⚠️ 404 Not Found: ${req.method} ${req.path}`);
   res.status(404).json({
     success: false,
-    error: 'Route not found',
-    requested_path: req.path,
-    method: req.method
+    error: 'Route not found'
   });
 });
 
@@ -539,8 +531,7 @@ app.use((err, req, res, next) => {
   console.error('❌ Server Error:', err);
   res.status(500).json({
     success: false,
-    error: 'Internal server error',
-    message: err.message
+    error: 'Internal server error'
   });
 });
 
@@ -550,15 +541,18 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 5000;
 
 const server = app.listen(PORT, () => {
-  console.log('\n' + '='.repeat(60));
-  console.log('🎮 Sinhala Sign Language Game - Backend');
-  console.log(`🌐 Server: http://localhost:${PORT}`);
-  console.log(`📊 Health: http://localhost:${PORT}/api/health`);
-  console.log(`🧪 Test: http://localhost:${PORT}/api/questions/test`);
-  console.log(`📝 Quiz: http://localhost:${PORT}/api/questions/quiz/2`);
-  console.log(`👤 Login: http://localhost:${PORT}/users/login`);
-  console.log(`🎯 Register: http://localhost:${PORT}/api/register`);
-  console.log('='.repeat(60) + '\n');
+  console.log('\n' + '='.repeat(70));
+  console.log('🎮 Sinhala Sign Language Game - Backend Server');
+  console.log('='.repeat(70));
+  console.log(`🌐 Server:          http://localhost:${PORT}`);
+  console.log(`📊 Health Check:    http://localhost:${PORT}/api/health`);
+  console.log(`🔍 Quiz Test:       http://localhost:${PORT}/api/questions/quiz/2`);
+  console.log(`🎯 Register:        http://localhost:${PORT}/api/register`);
+  console.log('='.repeat(70));
+  console.log(`🔐 JWT Security:    ✅ Enabled`);
+  console.log(`🔒 Bcrypt Hashing:  ✅ Enabled`);
+  console.log(`🗄️  Database:        ${mongoose.connection.name || 'Connecting...'}`);
+  console.log('='.repeat(70) + '\n');
 });
 
 // ========================

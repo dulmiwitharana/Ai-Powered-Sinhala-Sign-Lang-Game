@@ -39,15 +39,16 @@ export default function Login() {
       const data = await res.json();
       
       if (data.success) {
-        // Store user data in localStorage
+        // Store JWT token
+        localStorage.setItem('token', data.token);
+        
+        // Store user data
         localStorage.setItem('user', JSON.stringify(data.user));
         
         // Check if user has completed quiz
         if (data.user.hasTakenQuiz) {
-          // User has completed quiz - go directly to game selection
           showVisualFeedback('success', `Welcome back ${data.user.name}! Taking you to games...`);
           
-          // Store game user data
           const gameUserData = {
             userId: data.user._id,
             mongoId: data.user.gameProfile?._id || data.user._id,
@@ -66,10 +67,8 @@ export default function Login() {
             navigate('/gameselection');
           }, 1500);
         } else {
-          // User hasn't completed quiz - go to registration/quiz flow
           showVisualFeedback('success', `Welcome ${data.user.name}! Let's set up your profile.`);
           
-          // Store partial game user data
           const partialGameUser = {
             _id: data.user._id,
             userId: data.user._id,
@@ -112,7 +111,6 @@ export default function Login() {
     <div className="min-h-screen bg-gradient-to-br from-purple-400 via-pink-400 to-yellow-400 flex items-center justify-center p-4">
       <div className="bg-white rounded-2xl shadow-lg p-6 w-full max-w-sm transform hover:scale-102 transition-transform duration-200">
         
-        {/* Header with Large Visual Icon */}
         <div className="text-center mb-8">
           <div className="text-5xl mb-3 animate-bounce">
             👋
@@ -123,7 +121,6 @@ export default function Login() {
           <p className="text-gray-600 text-sm mt-1">Sign in to continue learning</p>
         </div>
 
-        {/* Visual Feedback Banner */}
         {feedback.message && (
           <div className={`mb-4 p-3 rounded-xl text-center font-semibold text-base animate-pulse ${
             feedback.type === 'success' 
@@ -137,9 +134,8 @@ export default function Login() {
           </div>
         )}
 
-          <div className="space-y-4">
+        <div className="space-y-4">
           
-          {/* Email Input */}
           <div className="space-y-2">
             <label className="flex items-center text-lg font-semibold text-gray-700">
               <span className="text-2xl mr-2">📧</span>
@@ -162,7 +158,6 @@ export default function Login() {
             </div>
           </div>
 
-          {/* Password Input */}
           <div className="space-y-2">
             <label className="flex items-center text-lg font-semibold text-gray-700">
               <span className="text-2xl mr-2">🔒</span>
@@ -192,7 +187,6 @@ export default function Login() {
             </div>
           </div>
 
-          {/* Login Button */}
           <button
             onClick={handleSubmit}
             disabled={isLoading}
@@ -215,7 +209,6 @@ export default function Login() {
             )}
           </button>
 
-          {/* Divider */}
           <div className="relative my-4">
             <div className="absolute inset-0 flex items-center">
               <div className="w-full border-t border-gray-300"></div>
@@ -225,7 +218,6 @@ export default function Login() {
             </div>
           </div>
 
-          {/* Register Button */}
           <button
             onClick={handleRegisterRedirect}
             className="w-full py-3 px-5 rounded-xl text-lg font-bold text-gray-700 border border-purple-300 bg-white hover:bg-purple-50 transition-all duration-200 transform hover:scale-102"
@@ -237,7 +229,6 @@ export default function Login() {
           </button>
         </div>
 
-        {/* Visual Help Section */}
         <div className="mt-6 p-4 bg-gradient-to-r from-blue-50 to-purple-50 rounded-2xl border border-purple-100">
           <div className="text-center">
             <div className="text-2xl mb-2">💡</div>
@@ -261,15 +252,6 @@ export default function Login() {
           </div>
         </div>
 
-        {/* Debug Info (Remove in production) */}
-        {/* <div className="mt-4 p-3 bg-gray-50 rounded-xl text-xs text-gray-600">
-          <p className="font-medium mb-1">🔧 Backend Status:</p>
-          <p>• Server: http://localhost:5000</p>
-          <p>• Login: /users/login</p>
-          <p className="mt-1 text-green-600">✅ Make sure your backend is running!</p>
-        </div> */}
-
-        {/* Decorative Elements */}
         <div className="flex justify-center mt-6 space-x-2">
           <div className="w-3 h-3 bg-purple-400 rounded-full animate-pulse"></div>
           <div className="w-3 h-3 bg-pink-400 rounded-full animate-pulse" style={{animationDelay: '0.2s'}}></div>

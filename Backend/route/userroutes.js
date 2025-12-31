@@ -1,22 +1,17 @@
 const express = require("express");
 const router = express.Router();
-
-//Insert Model
 const User = require("../model/usermodel");
-//Insert User Controller
 const UserController = require("../controllers/usercontrol");
+const verifyToken = require("../middleware/auth");
 
-//Get all users
-router.get("/", UserController.getAllUsers);
-router.post("/", UserController.addUser);
-router.get("/:id", UserController.getById); 
-router.put("/:id", UserController.updateUser);  
+// Public routes (no authentication needed)
+router.post("/", UserController.addUser); // Register
+router.post("/login", UserController.loginUser); // Login
 
-// Delete user
-router.delete("/:id", UserController.deleteUser);
+// Protected routes (require authentication)
+router.get("/", verifyToken, UserController.getAllUsers);
+router.get("/:id", verifyToken, UserController.getById); 
+router.put("/:id", verifyToken, UserController.updateUser);  
+router.delete("/:id", verifyToken, UserController.deleteUser);
 
-// Add login route
-router.post("/login", UserController.loginUser);
-
-//export
 module.exports = router;
