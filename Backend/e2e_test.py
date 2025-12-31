@@ -36,8 +36,8 @@ except Exception:
 
 EXPRESS_API = os.getenv('EXPRESS_API', 'http://127.0.0.1:5000/api')
 FLASK_API = os.getenv('FLASK_API', 'http://127.0.0.1:5001/api')
-MONGODB_URI = os.getenv('MONGODB_URI', 'mongodb://localhost:27017/')
-DB_NAME = os.getenv('E2E_DB', 'sinhala_game_db')
+MONGODB_URI = os.getenv('MONGODB_URI', 'mongodb+srv://dulmiwitharana:uS1LtYnTvcWkmJtU@cluster0.8tb8jax.mongodb.net/test?retryWrites=true&w=majority&appName=Cluster0')
+DB_NAME = os.getenv('E2E_DB', 'test')
 
 print('\nE2E: EXPRESS_API=', EXPRESS_API)
 print('E2E: FLASK_API=', FLASK_API)

@@ -34,7 +34,7 @@ from bson.objectid import ObjectId
 class MongoDBManager:
     """Manages MongoDB connection and operations for game attempts"""
     
-    def __init__(self, mongodb_uri=None, db_name="sinhala_game_db"):
+    def __init__(self, mongodb_uri=None, db_name="test"):
         """
         Initialize MongoDB connection
         
@@ -44,7 +44,7 @@ class MongoDBManager:
         """
         self.mongodb_uri = mongodb_uri or os.getenv(
             'MONGODB_URI',
-            'mongodb://localhost:27017/'
+            'mongodb+srv://dulmiwitharana:uS1LtYnTvcWkmJtU@cluster0.8tb8jax.mongodb.net/test?retryWrites=true&w=majority&appName=Cluster0'
         )
         self.db_name = db_name
         self.client = None
